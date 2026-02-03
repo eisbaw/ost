@@ -233,9 +233,9 @@ Tokens are stored in `~/.config/teams-cli/config.toml` with restricted permissio
 
 ## Documentation
 
-See the `docs/` folder for:
-- `terminology/` - Glossary of protocols and terms (RTP, SRTP, ICE, SDP, etc.)
-- `GUIDs.md` - Reference of known Microsoft GUIDs
+- [Architecture Diagrams](docs/architecture.md) - Visual diagrams of authentication, messaging, calling, and media flows
+- [Terminology Index](docs/terminology_index.md) - Glossary of protocols and terms (RTP, SRTP, ICE, SDP, etc.)
+- [GUIDs Reference](docs/GUIDs.md) - Known Microsoft GUIDs (OAuth client IDs, tenant IDs, SEI UUIDs, bot MRIs)
 
 ## License
 
