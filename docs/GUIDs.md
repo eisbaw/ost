@@ -9,6 +9,12 @@ Known GUIDs used in the Teams CLI.
 | `1fec8e78-bce4-4aaf-ab1b-5451cc387264` | Teams desktop/mobile client (work/school accounts) |
 | `8ec6bc83-69c8-4392-8f08-b3c986009232` | Teams client (personal/consumer accounts) |
 
+## Azure AD Tenant IDs
+
+| GUID | Description |
+|------|-------------|
+| `9188040d-6c67-4c5b-b112-36a304b66dad` | Microsoft Accounts (MSA) tenant - personal accounts (outlook.com, hotmail.com, live.com) |
+
 ## Azure AD Resource/Audience IDs
 
 | GUID | Description |
