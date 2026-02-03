@@ -31,9 +31,10 @@ A command-line client for Microsoft Teams written in Rust.
 
 ## Requirements
 
-- Rust 1.70+
+- Rust 1.70+ (some dependencies are pinned for compatibility with older rustc versions)
 - Linux (for audio/video features)
 - Nix (recommended) or manual dependency installation
+- [just](https://github.com/casey/just) command runner (optional, for convenience recipes)
 
 ### Dependencies
 
@@ -43,6 +44,8 @@ A command-line client for Microsoft Teams written in Rust.
 ## Installation
 
 ### Using Nix (recommended)
+
+The `shell.nix` provides all required dependencies. The `just` command runner executes recipes from the `Justfile`.
 
 ```bash
 nix-shell
@@ -80,6 +83,12 @@ Login with device code flow:
 
 ```bash
 teams-cli login
+```
+
+Force re-authentication (ignores cached token):
+
+```bash
+teams-cli login --force
 ```
 
 Check authentication status:
@@ -155,18 +164,67 @@ Options:
 
 Commands:
   login      OAuth2 device code authentication
+             --force    Force re-login even if cached token exists
   logout     Clear stored credentials
   status     Show token expiry status
   whoami     Verify authentication
   chats      List recent chats
+             --limit N  Number of chats to show
   read       Read messages from a chat
+             --limit N  Number of messages to show
   send       Send a message
+             --to ID    Chat ID to send to
   teams      List joined teams and channels
   presence   Get/set presence status
   trouter    Connect to push notification service
   call-test  Place a test call
+             --echo       Call the Echo bot (call quality tester)
+             --duration N Call duration in seconds (default: 30)
+             --thread ID  1:1 chat thread ID to call
+             --record     Enable call recording
+             --camera     Enable camera capture (video-capture feature)
+             --display    Enable video display window (video-capture feature)
+             --tone       Use test tone instead of microphone
   mic-test   Test microphone (audio feature)
   cam-test   Test camera (video-capture feature)
+```
+
+## Testing
+
+### Unit Tests
+
+Run the test suite:
+
+```bash
+just test
+# or
+cargo test
+```
+
+### End-to-End Tests
+
+E2E tests require a valid login session. Run all e2e tests:
+
+```bash
+just e2e
+```
+
+Individual e2e tests:
+
+| Test | Description |
+|------|-------------|
+| `tests/e2e_trouter.sh` | Trouter WebSocket connection |
+| `tests/e2e_chats.sh` | Chat listing |
+| `tests/e2e_read.sh` | Message reading |
+| `tests/e2e_teams.sh` | Teams/channels listing |
+| `tests/e2e_echo123.sh` | Echo bot call test |
+
+### Quality Checks
+
+```bash
+just check    # Run fmt-check, lint, and compile tests
+just lint     # Run clippy lints
+just fmt      # Format code
 ```
 
 ## Configuration
