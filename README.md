@@ -1,6 +1,10 @@
-# Teams CLI
+# OST client := Open Source Teams client
 
 A command-line client for Microsoft Teams written in Rust.
+
+*Ost* means cheese in Danish.
+
+![OST Logo](docs/logo_ost.jpg)
 
 ## Features
 
