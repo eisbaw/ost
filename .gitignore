@@ -1,0 +1,20 @@
+# Build artifacts
+/target/
+
+# Cargo lock (optional - include for applications, exclude for libraries)
+# Cargo.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local configuration (tokens are stored in ~/.config/teams-cli/)
+.env
+*.local

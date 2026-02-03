@@ -1,0 +1,147 @@
+
+{"callInvitation":{"callModalities":["Audio","Video","ScreenViewer"],"callModalities":["Audio"],"links":{"acceptance":"https://trouter-cus-a.drip.trouter.io:8443/v3/f/-//outgoingCallLeg//acceptance","end":"https://trouter2-cus-c.trouter.teams.microsoft.com:3443/v3/f/outgoingCallLeg/end","mediaAnswer":"https://trouter-cus-a.drip.trouter.io:8443/v3/f/-//outgoingCallLeg//mediaAnswer","p2pForkNotification":"https://trouter-cus-a.drip.trouter.io:8443/v3/f/-//outgoingCallLeg//p2pForkNotification"},"mediaContent":{"blob":"v=0\r\no=- 0 0 IN IP4 52.\r\ns=session\r\nc=IN IP4 52.\r\nb=CT:99980\r\nt=0 0\r\na=x-mediabw:main-video send=12000;recv=12000\r\nm=audio 21730 RTP/SAVP 117 104 114 9 112 111 18 0 8 103 116 115 97 13 118 101\r\na=x-ssrc-range:4150552833-4150552833\r\na=rtcp-fb:* x-message app send:dsh recv:dsh\r\na=rtcp-rsize\r\na=label:main-audio\r\na=x-source:main-audio\r\na=ice-ufrag:d3sA\r\na=ice-pwd:\r\na=candidate:1 1 UDP 2130706431  21730 typ host \r\na=candidate:1 2 UDP 2130705918  21731 typ host \r\na=x-candidate-ipv6:2 1 UDP 2130705919  28584 typ host \r\na=x-candidate-ipv6:2 2 UDP 2130705406  28585 typ host \r\na=candidate:3 1 UDP 184548351  27882 typ relay raddr  rport 11632 \r\na=candidate:3 2 UDP 184547838  27881 typ relay raddr  rport 11633 \r\na=candidate:4 1 TCP-PASS 174455295  28276 typ relay raddr  rport 30667 \r\na=candidate:4 2 TCP-PASS 174454782  28276 typ relay raddr  rport 30667 \r\na=x-candidate-ipv6:5 1 UDP 184547327 27882 typ relay raddr  rport 11632 \r\na=x-candidate-ipv6:5 2 UDP 184546814 27881 typ relay raddr  rport 11633 \r\na=candidate:6 1 UDP 1694234111  11632 typ srflx raddr  rport 11632 \r\na=candidate:6 2 UDP 1694233598  11633 typ srflx raddr  rport 11633 \r\na=candidate:7 1 TCP-ACT 174846975  28276 typ relay raddr  rport 30667 \r\na=candidate:7 2 TCP-ACT 174846462  28276 typ relay raddr  rport 30667 \r\na=x-candidate-ipv6:8 1 TCP-PASS 174453247  28276 typ relay raddr  rport 30667 \r\na=x-candidate-ipv6:8 2 TCP-PASS 174452734  28276 typ relay raddr  rport 30667 \r\na=x-candidate-ipv6:9 1 TCP-ACT 174845951  28276 typ relay raddr  rport 30667 \r\na=x-candidate-ipv6:9 2 TCP-ACT 174845438  28276 typ relay raddr  rport 30667 \r\na=candidate:10 1 TCP-ACT 1684794879  30667 typ srflx raddr  rport 30667 \r\na=candidate:10 2 TCP-ACT 1684794366  30667 typ srflx raddr  rport 30667 \r\na=cryptoscale:1 client AES_CM_128_HMAC_SHA1_80 inline:|2^31|1:1\r\na=crypto:2 AES_CM_128_HMAC_SHA1_80 inline:+|2^31|1:1\r\na=crypto:3 AES_CM_128_HMAC_SHA1_80 inline:+|2^31\r\na=maxptime:200\r\na=rtcp:21731\r\na=rtpmap:117 G722/8000/2\r\na=rtpmap:104 SILK/16000\r\na=fmtp:104 useinbandfec=1; usedtx=0\r\na=rtpmap:114 x-msrta/16000\r\na=fmtp:114 bitrate=29000\r\na=rtpmap:9 G722/8000\r\na=rtpmap:112 G7221/16000\r\na=fmtp:112 bitrate=24000\r\na=rtpmap:111 SIREN/16000\r\na=fmtp:111 bitrate=16000\r\na=rtpmap:18 G729/8000\r\na=rtpmap:0 PCMU/8000\r\na=rtpmap:8 PCMA/8000\r\na=rtpmap:103 SILK/8000\r\na=fmtp:103 useinbandfec=1; usedtx=0\r\na=rtpmap:116 AAL2-G726-32/8000\r\na=rtpmap:115 x-msrta/8000\r\na=fmtp:115 bitrate=11800\r\na=rtpmap:97 RED/8000\r\na=rtpmap:13 CN/8000\r\na=rtpmap:118 CN/16000\r\na=rtpmap:101 telephone-event/8000\r\na=fmtp:101 0-16\r\na=rtcp-mux\r\na=ptime:20\r\na=extmap:1 http:\\\\www.webrtc.org\\experiments\\rtp-hdrext\\abs-send-time\r\nm=video 14606 RTP/SAVP 122 121 123\r\na=x-ssrc-range:4150552834-4150552933\r\na=rtcp-fb:* x-message app send:src,x-pli recv:src,x-pli\r\na=rtcp-rsize\r\na=label:main-video\r\na=x-source:main-video\r\na=ice-ufrag:m1hj\r\na=ice-pwd:\r\na=x-caps:121 263:1920:1080:30.0:2000000:1;4359:1280:720:30.0:1500000:1;8455:640:480:30.0:600000:1;12551:640:360:30.0:600000:1;16647:352:288:15.0:250000:1;20743:424:240:15.0:250000:1;24839:176:144:15.0:180000:1\r\na=candidate:1 1 UDP 2130706431  14606 typ host \r\na=candidate:1 2 UDP 2130705918  14607 typ host \r\na=x-candidate-ipv6:2 1 UDP 2130705919  32722 typ host \r\na=x-candidate-ipv6:2 2 UDP 2130705406  32723 typ host \r\na=candidate:3 1 UDP 184548351  27884 typ relay raddr  rport 9968 \r\na=candidate:3 2 UDP 184547838  27883 typ relay raddr  rport 9969 \r\na=candidate:4 1 TCP-PASS 174455295  28278 typ relay raddr  rport 9519 \r\na=candidate:4 2 TCP-PASS 174454782  28278 typ relay raddr  rport 9519 \r\na=x-candidate-ipv6:5 1 UDP 184547327 27884 typ relay raddr  rport 9968 \r\na=x-candidate-ipv6:5 2 UDP 184546814 27883 typ relay raddr  rport 9969 \r\na=candidate:6 1 UDP 1694234111  9968 typ srflx raddr  rport 9968 \r\na=candidate:6 2 UDP 1694233598  9969 typ srflx raddr  rport 9969 \r\na=candidate:7 1 TCP-ACT 174846975  28278 typ relay raddr  rport 9519 \r\na=candidate:7 2 TCP-ACT 174846462  28278 typ relay raddr  rport 9519 \r\na=x-candidate-ipv6:8 1 TCP-PASS 174453247  28278 typ relay raddr  rport 9519 \r\na=x-candidate-ipv6:8 2 TCP-PASS 174452734  28278 typ relay raddr  rport 9519 \r\na=x-candidate-ipv6:9 1 TCP-ACT 174845951  28278 typ relay raddr  rport 9519 \r\na=x-candidate-ipv6:9 2 TCP-ACT 174845438  28278 typ relay raddr  rport 9519 \r\na=candidate:10 1 TCP-ACT 1684794879  9519 typ srflx raddr  rport 9519 \r\na=candidate:10 2 TCP-ACT 1684794366  9519 typ srflx raddr  rport 9519 \r\n rport 23982 \r\na=cryptoscale:1 client AES_CM_128_HMAC_SHA1_80 inline:|2^31|1:1\r\na=crypto:2 AES_CM_128_HMAC_SHA1_80 inline:|2^31|1:1\r\na=crypto:3 AES_CM_128_HMAC_SHA1_80 inline:|2^31\r\na=rtcp:14607\r\na=rtpmap:122 X-H264UC/90000\r\na=fmtp:122 packetization-mode=1;mst-mode=NI-TC\r\na=rtpmap:121 x-rtvc1/90000\r\na=rtpmap:123 x-ulpfecuc/90000\r\na=rtcp-mux\r\na=extmap:1 http:\\\\www.webrtc.org\\experiments\\rtp-hdrext\\abs-send-time\r\n","contentType":"application/sdp"},"pstnContent":{"callOriginToken":"","clientIPv4":"192.0.2.2","emergencyCallCountry":"","platformName":"Windows 10.0  (build 10240, platformID 2, version 0x2800000a)","publicApiCall":false,"systemFingerprint":[0,2,0,3,2],"systemId":}},"capabilities":{"cloudAudioVideoConference":"enabled"},"conversationRequest":{"links":{"addParticipantFailure":"https://trouter-cus-a.drip.trouter.io:8443/v3/f/-//outgoingConversation//addParticipantFailure","addParticipantSuccess":"https://trouter-cus-a.drip.trouter.io:8443/v3/f/-//outgoingConversation//addParticipantSuccess","conversationEnd":"https://trouter-cus-a.drip.trouter.io:8443/v3/f/-//outgoingConversation//end","conversationUpdate":"https://trouter-cus-a.drip.trouter.io:8443/v3/f/-//outgoingConversation//update","localParticipantUpdate":"https://trouter-cus-a.drip.trouter.io:8443/v3/f/-//outgoingConversation//localPariticipantUpdate"},"roster":{"rosterUpdate":"https://trouter-cus-a.drip.trouter.io:8443/v3/f/-/outgoingConversation/rosterUpdate","type":"MultiParty","type":"MultiPartyEndpoint",},"subject":"","suppressDialout":false,"suppressDialout":true},"debugContent":{"callId":"","endpointId":"","operationId":"7222bbae-b201-444a-a711-3289c3139ab9"},"participants":{"from":{"endpointId":"","id":"8:","languageId":"en"},"to":[{"id":"8:"}]}}"capabilities":{"cloudAudioVideoConference":"enabled"},"conversationRequest":{"links":{"addModalityFailure":"https://trouter"addModalitySuccess":"https://trouter"admitFailure":"https://trouter"admitSuccess":"https://trouter"addParticipantFailure":"https://trouter-cus-a.drip.trouter.io:8443/v3/f/-/outgoingConversation/addParticipantFailure","addParticipantSuccess":"https://trouter-cus-a.drip.trouter.io:8443/v3/f/-/outgoingConversation/addParticipantSuccess","conversationEnd":"https://trouter-cus-a.drip.trouter.io:8443/v3/f/-/outgoingConversation/end","conversationUpdate":"https://trouter-cus-a.drip.trouter.io:8443/v3/f/-/outgoingConversation/update","localParticipantUpdate":"https://trouter-cus-a.drip.trouter.io:8443/v3/f/-/outgoingConversation/localPariticipantUpdate"},"roster":{"rosterUpdate":"https://trouter-cus-a.drip.trouter.io:8443/v3/f/-/outgoingConversationincomingConversation/rosterUpdate","type":"MultiParty"},"subject":"suppressDialout":false},"debugContent":{"callId":"",:"http://broker.invalid/csa/outgoingCallLeg :"http://broker.invalid/csa/incomingCallLeg :"http://broker.invalid/csa/incomingConversation :"http://broker.invalid/csa/outgoingConversation"endpointId":"","operationId":""},"participants":"{"from":{"endpointId":","id":","languageId":"en"},"to":[{"id\":"}]}""additionalActions":["input":{"sender":{"participant":{"from":{"attach":{"mediaContent":{"endpointId":"id":"participantId":"name":"join","name":"mediaAnswer","url":"https://api.cc.skype.com/conv/1:","waitForResponse":true"requireMediaContent":false,"conversationController":"https://api.flightproxy.teams.microsoft.com/api/v2/ep/"contentType":"application/sdp","mediaLegId":""pstnContent":","escalationOccurring":false,"newOffer":false,"fromMixer": true"mediaLegId":""callKeepAliveInterval":2700,"controllerName":"lobby","callProperties":null "callAcceptance":{"acceptedBy":{"id":","displayName":","endpointId":","participantId":null,"hidden":"},"acceptedCallModalities":["audio","video"],"acceptedCallModalities":["audio"],"links":{"acknowledgement":"https://01.cc.skype.com:443/cc/v1/callAcceptance//6/a1/413/acknowledge?i=2","callLeg":"https://01.cc.skype.com:443/cc/v1/active/6/a1/413?i=2&e=","mediaRenegotiation":"https://01.cc.skype.com:443/cc/v1/active/6/a1/413/renegotiate?i=2&e=","transfer":"https://01.cc.skype.com:443/cc/v1/active/6/a1/413/transfer?i=2&e=","replacement":"https://01.cc.skype.com:443/cc/v1/active/6/a1/413/replacement?i=2&e=","retargetCompletion":null},"links":{"balanceUpdate":"https://trouter-eus2-b.dc.trouter.io:3443/v3/f/492-trouter-eus2-b.drip.trouter.io/csa/incomingCallLeg/balanceUpdate",{"additionalActions":[{"input":{"capabilities":{"cloudAudioVideoConference":"enabled","cloudScreenSharing":"enabled""hostlessConference":"enabled""implicitCallback":"enabled""additionalModalityOperationLinks":"enabled""serverMuteUnmute":"disabled""autoJoinOnConflict":"disabled""additionalModalityOperationLinks":"disabled""cloudMerge":"enabled","supportsCompressedServicePayload":"enabled"},"conversationRequest":{"conversationProperties":3,"links":{""participants":{"from":{"endpointId":"","id":"","participantId":""ProcessingCallControllerInstance":"https://"properties":{"allowConversationWithoutHost":true},"endpointCapabilities":255,"call":{"mediaStreams":[{"type":"audio","type":"video","type":"applicationsharing-video","type":"audio-teleconferencing","type":"data","label":"data","label":"main-audio","label": "main-video","label":"applicationsharing-video","label":"main-phone-conf","sourceId":11,"direction":"sendrecv","direction": "recvonly","serverMuted":false}],"serverMuteVersion":1,"clientVersion":"CallSignalingAgent(27/1.2.00.,"role":"admin","role":"guest""networkContent":{"ipv4":"::ffff:","ipv6":"mac":"subnetLengthIpv4":"subnetLengthIpv6":"64","bssid":"e911":"callTransfer":{"replacementDetails":{"replacementTargetParticipantId":","replaces":null},"isConsultative":true,"authorizationToken":"newCallModalities":[],"sharedCorrelationId":"parkType":"sharedLinePark","endpointMetadata": {},"endpointMetadata":{"callTranslatorBotSpokenLanguageLocale":"it-IT","isCallMediaCaptured":false,"reactionsEnabled":true,"supportsCallRecording":true,"supportsNotifyCallMediaCaptured":true,"isMicrophoneOn":false},"endpointState":{"endpointStateSequenceNumber":1,"state":{"isMuted":true}}"routingFlags": ["noPermissionCheck","noNotification","noVoicemail","noP2PFork","limitedRoutingRecursion","ngcEmergencyCallingMode","sfbEmergencyCallingMode","noMissedCall","noRoutingRecursion","preferSfB"],,"name":"join","url":"","waitForResponse":true"","waitForResponse":false},{"input":{"mediaAnswer":{"callModalities":["Audio","Video"],"clientLocation":"US","contentType":"application/sdp","contentType":"application/sdp-ngc-0.5","contentType":"application/sdp-ngc-1.0""mediaLegId":"},"pstnContent":{"callOriginToken":","clientIPv4":"","emergencyCallCountry":"","platformName":"Windows 6.2  (build 9200, platformID 2, version 0x23f00206)","publicApiCall":false,"systemFingerprint":[],"systemId":},"sender":{"endpointId":""name":"mediaAnswer","url":"https://mediaAnswer.special","waitForResponse":true}],"attach":{"links":{"end":"https://trouter-eus2-b.dc.trouter.io:3443/v3/f/250-trouter-},"requireMediaContent":false},"capabilities":{"cloudAudioVideoConference":"enabled","cloudMerge":"enabled","cloudScreenSharing":"enabled"},"transferor": null,"links":{"progress":"https://"callController":"https://callcontroller.invalid","redirection":"https://"leave":"https://"state":{"isMultiParty":true,"isBroadcast":false,"isVoiceDataCollectionOn":false,"groupCallInitiator":"mediaType":"isSeamlessUpgrade":"enableForking":"replaces":"participantInvitation":"https://"rejection":"https://"transferAcceptance":"https://"transferCompletion":"https://"mediaAcknowledgement":"https://"mediaStreams"debugContent":{"ecsEtag":","notificationSource":"Msnp"}}progress?i=/mediaAnswer?/accept?i=/redirect?i=/reject?i\csa/incomingCallLeg/csa/outgoingCallLeg/csa/incomingConversation/csa/outgoingConversation/"leave":"https://"addParticipant":"https://"removeParticipant":"https://addModality":"https://"removeModality":"https://"unmute":"https://"mute":"https://"notificationLinks":"https://"merge":"https://"updateEndpointMetadata":"https://"updateEndpointState":"https://"admit":"https://"conversationHttpTransport":"http://"brokerHttpTransport":"http://"additionalActionResponses":[{"url":"https://"output":{"roster":{"participants":","type":"MultiParty","sequenceNumber":0},"conversationController":"https://,"subject":","activeModalities":{"call": null,"groupChat":{"messageId":"0","threadId":"19:meeting_@thread.skype","threadId":"19:meeting_@thread.v2"}},"meetingProperties":"organizer":{"id":"8:orgid:"displayName": null,"endpointId":"00000000-0000-0000-0000-000000000000","languageId":null,"participantId": null,"hidden": false,"tenantId":},"region":"amer","emea","apac""enterprisePstnContext":{"gatewayTenantId":" },"meetingInfo":{"meetingType":1,"organizerId":","replyChainMessageId":"0","tenantId":"},"meetingDetails":{"capabilities":{"allowAnonymousUsersToDialOut":false,"admissionType":"open","allowAnonymousUsersToStartMeeting":false,"admitAnonymousUsersByDefault":false,"appDesktopSharingType":"desktop","allowVideo":true,"allowDialinConferencing":true,"allowCloudRecording":false,"pstnConferencingDialoutType":"internationalAndDomestic"},"pstnDetails":{"bridgeId":","userBridgeId":","acpMcuInfo":{"settings":{"tollNumber":"999999999000026","tollFreeNumber":null,"participantPasscode":"}},"isStatic": false,"dialinUrl":"https://dialin.teams.microsoft.com/"},"meetingCapability":{"autoAdmittedUsers":"EveryoneInCompany","allowIPVideo":true,"allowAnonymousUsersToDialOut":false,"allowAnonymousUsersToStartMeeting":true,"allowedAutoAdmittedUsers":["EveryoneInCompany"],"enableAppDesktopSharing":"Desktop","pstnConferencingDialOutType":"InternationalAndDomestic","allowCloudRecording":false,"allowTranscription":true,"allowPowerPointSharing":true,"allowSharedNotes":true,"allowWhiteboard":true,"allowPstnConferencing":true},"exchangeId": null,"iCalUid": null"cloudPstnConferenceProperties":{"bridgeType":"online","bridgeNumber":"999999999000026","bridgeId":","passCode":"hybrid","unknown"  "clientContentForMediaController":{"controlVideoStreaming":"dominantSpeakerInfo":"csrcInfo":"subscribe":"updateEndpointMetadata":"merge":\r
+o=- 0 0 IN IP4 
+s=session
+c=IN IP4 
+b=CT:99980
+b=CT:50000
+t=0 0
+a=x-mediabw:main-video send=12000;recv=12000
+m=audio 3480 RTP/SAVP 105 104 9 18 0 8 103 97 13 118 119 101
+a=rtcp-fb:* x-message app send:dsh,x-gain recv:dsh,x-gain
+a=group:BUNDLE audio_0 video_1
+a=group:BUNDLE media_0 media_1
+a=group:BUNDLE audio_0 video_1 appsharing_video_2
+m=audio 3480 RTP/SAVP 104 9 18 0 8 103 97 13 118 119 101
+ rport 12165 MTURNID 14809095606769936868 rport 17749 MTURNID 14295468915228293275
+a=rtcp-fb:*x-message app send : dsh, x-gain recv : dsh, x-gain
+a=fingerprint:sha-256 
+a=candidate:1 1 UDP 2130706431 typ host
+a=candidate:2 1 UDP 184548863 3480 typ relay raddr rport MTURNID rport 23244 rport 23982 rport 4892
+a=candidate:3 1 UDP 1694235647 rport 12165 rport 17749 typ srflx raddr rport 
+a=ice-options:trickle
+a=ssrc: cname:* msid:* mslabel:* label:*
+a=mid:appsharing_video_2
+a=x-ssrc-range:1-1 msid:mainVideo-
+a=x-mediabw:main-video send=8100;recv=8000
+a=x-mediabw:applicationsharing-video send=8100;recv=8000
+a=candidate:4 1 TCP-ACT 1684797951 
+a=crypto:2 AES_CM_128_HMAC_SHA1_80 inline:
+a=crypto:3 AES_CM_128_HMAC_SHA1_80 inline:
+a=crypto:2 AES_CM_128_HMAC_SHA1_32 inline:
+a=maxptime:200
+a=rtcp:3480
+a=rtpmap:105 SILK/24000
+a=mid:audio_0 SILK/24000
+a=fmtp:103 useinbandfec=1; usedtx=0
+a=fmtp:104 useinbandfec=1; usedtx=0
+a=fmtp:105 useinbandfec=1; usedtx=0
+a=rtpmap:104 SILK/16000
+a=rtpmap:105
+a=rtpmap:9 G722/8000
+a=rtpmap:18 G729/8000
+a=rtpmap:0 PCMU / 8000
+a=rtpmap:8 PCMA/8000
+a=rtpmap:103 SILK/8000
+a=rtpmap:97 RED/8000
+a=rtpmap:109 SATINSWB/48000
+a=rtpmap:108 SATIN/48000 
+a=rtpmap:13 CN/8000
+a=rtpmap:118 CN/16000
+a=rtpmap:119 CN/24000
+a=rtpmap:101 telephone-event/8000
+a=fmtp:101 0-16
+a=rtcp-mux
+a=ptime:20
+a=extmap:1 http:\\www.webrtc.org\experiments\rtp-hdrext\abs-send-time
+a=extmap:3 http:\\skype.com\experiments\rtp-hdrext\fast_bandwidth_feedback
+a=x-bwealgorithm:rmestimator bwc packetpair
+a=x-bwealgorithm:rmbwc rmestimator bwc packetpair
+m=video 3480 RTP/SAVP 122 121 124 123
+a=x-ssrc-range:
+a=rtcp-fb:* x-message app send:src,x-pli recv:src,x-pli
+a=rtcp-fb:* nack pli
+a=rtcp-fb:* goog-remb
+a=rtcp-fb:* transport-cc
+a=rtcp-fb:* ccm fir
+a=rtcp-rsize
+a=label:main-video
+a=label:applicationsharing-video
+a=x-source:main-video
+a=ice-ufrag:ac/r
+a=ice-pwd:
+a=x-source-streamid:9
+a=fmtp:99 apt=107;rtx-time=3000
+a=cryptoscale:1 server AES_CM_128_HMAC_SHA1_80 inline:
+a=x-caps:121 .0:2000000 : 1; .0:1500000:1;.0:600000:1;1.0:250000:1;2:.0:180000:1
+a=mid:video_1
+a=mid:media_0
+a=sendrecv
+a=sendonly
+a=mid:media_1
+a=rtpmap:122 X-H264UC/90000
+a=rtpmap:107 H264/90000
+a=rtpmap:99 rtx/90000
+a=fmtp:99 apt=107
+a=rtpmap:120 rtx/16000
+a=fmtp:120 apt=104
+a=ssrc-group:FID 45551 45552
+a=rtcp-fb:* nack
+a=rtpmap:119 CN/24000
+a=rtpmap:109 SATINSWB/48000
+a=rtpmap:108 SATIN/48000
+m=x-data 1234 RTP/SAVP 127 126
+a=fmtp:122 packetization-mode=1;mst-mode=NI-TC
+a=rtpmap:121 x-rtvc1/90000
+a=extmap:14 urn:ietf:params:rtp-hdrext:ssrc-audio-level  RTP/AVP 
+a=fmtp:107 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=
+a=extmap:2 urn:ietf:params:rtp-hdrext:toffset
+a=extmap:4 urn:3gpp:video-orientation
+urn:ietf:params:rtp-hdrext:ssrc-audio-level
+a=x-signaling-fb:* x-message app recv:*sh
+a=x-signaling-fb:* x-message app send:src,csrc,vc recv:src
+a=ssrc-group:FID 1301 1351
+a=msid-semantic: WMS 
+a=rtpmap:124 H264/90000
+a=fmtp:124 profile-level-id=42C02A;packetization-mode=1;max-mbps=135000;max-fs=8160;max-br=208;max-fps=1500
+a=fmtp:107 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f;max-fs=8160;max-mbps=135000;max-fps=1500
+a=rtcp-mux
+a=extmap:1 
+a=rtcp:3481
+a=sendonly
+a=x-bwealgorithm:rmestimator bwc packetpair rmbwc
+a=x-bwealgorithm:rmestimator bwc packetpair webrtc
+m=video 3481 RTP/SAVP 122 124 123
+a=x-mediasettings:applicationsharing-video=required 17749 typ host
+a=extmap:2 http:\\skype.com\experiments\rtp-hdrext\frame-counters
+a=extmap:3 http:\skype.com\experiments\rtp-hdrext\fast_bandwidth_feedback
+a=extmap:6 http://www.webrtc.org/experiments/rtp-hdrext/playout-delay
+a=extmap:5 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01
+a=extmap:3 http:\\skype.com\experiments\rtp-hdrext\fast_bandwidth_feedback#version_2
+a=extmap:5 http:\\www.ietf.org\id\draft-holmer-rmcat-transport-wide-cc-extensions-01
+a=extmap:8 http://www.webrtc.org/experiments/rtp-hdrext/video-timing
+a=extmap:10 http://tools.ietf.org/html/draft-ietf-avtext-framemarking-07
+
+Host: 
+Cookie: 
+X-SkypeToken: 
+Content-Length: 
+Connection: Keep-Alive
+Cache-Control: no-cache
+Host: api.cc.skype.com
+Accept-Encoding: gzip, deflate
+Accept: */*
+X-Microsoft-Skype-Chain-ID: 
+X-Microsoft-Skype-Tenant-Id: 
+X-Microsoft-Skype-Message-ID: 
+X-Microsoft-Skype-Original-Message-ID: 
+X-Microsoft-Skype-Participant-ID: 
+X-Microsoft-Skype-Compression: gzip
+X-Microsoft-Skype-Client: CallSignalingAgent(27/1.2.00.4664//;release_onthefly;releases/CL2019.R10);skylib-ios-armv7-libc++-release_2016;skylib-android-gnustl-release_2016
+User-Agent: WinINet HttpStack/17
+Content-Type: application/vnd.skype.gvc.v1.0+json; charset=utf-8
+Content-Type: application/json; charset=utf-8
+User-Agent: ConversationService/
+User-Agent: CallController/
+User-Agent: FlightingProxy/
+POST /conv/ HTTP/1.1
