@@ -134,6 +134,20 @@ fn render_header(area: Rect, buf: &mut Buffer, app: &App) {
 
 /// Render the status bar
 fn render_status(area: Rect, buf: &mut Buffer, app: &App) {
+    // If there's a status message, show it prominently.
+    if let Some(ref msg) = app.status_message {
+        let style = if app.status_is_error {
+            Style::default().fg(Color::Red).bg(Color::DarkGray)
+        } else {
+            Style::default().fg(Color::Green).bg(Color::DarkGray)
+        };
+        let line = Line::from(Span::styled(format!(" {} ", msg), style));
+        Paragraph::new(line)
+            .style(Style::default().bg(Color::DarkGray))
+            .render(area, buf);
+        return;
+    }
+
     let (conn_symbol, conn_color) = status_indicator(app.is_online);
     let connection = Span::styled(
         format!(" {} {} ", conn_symbol, app.connection_state),
@@ -142,12 +156,12 @@ fn render_status(area: Rect, buf: &mut Buffer, app: &App) {
 
     let sep_style = Style::default().fg(Color::DarkGray);
 
-    let channel = Span::styled(&app.channel_name, Style::default().fg(Color::Yellow));
-
-    let members = Span::styled(
-        format!(" {} members ", app.member_count),
-        Style::default().fg(Color::Gray),
-    );
+    let channel_display = if app.channel_name.is_empty() {
+        "(none)".to_string()
+    } else {
+        app.channel_name.clone()
+    };
+    let channel = Span::styled(channel_display, Style::default().fg(Color::Yellow));
 
     let pane = Span::styled(
         format!("Tab: {} ", app.active_pane.as_str()),
@@ -162,8 +176,6 @@ fn render_status(area: Rect, buf: &mut Buffer, app: &App) {
         connection,
         Span::styled(" | ", sep_style),
         channel,
-        Span::styled(" | ", sep_style),
-        members,
         Span::styled(" | ", sep_style),
         pane,
         Span::styled(" | ", sep_style),

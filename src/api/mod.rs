@@ -9,6 +9,23 @@ mod teams;
 
 use anyhow::Result;
 
+// Re-export data types for TUI integration
+pub use chat::{ChatInfo, MessageInfo};
+pub use me::UserInfo;
+pub use presence::PresenceInfo;
+pub use teams::TeamInfo;
+
+// Re-export ChannelInfo for use in TUI sidebar (currently consumed
+// only through TeamInfo.channels, but kept public for future callers).
+#[allow(unused_imports)]
+pub use teams::ChannelInfo;
+
+// Re-export data-returning functions for TUI integration
+pub use chat::{list_chats_data, read_messages_data, send_message_with_client};
+pub use me::whoami_data;
+pub use presence::get_presence_data;
+pub use teams::list_teams_data;
+
 /// List recent chats (native Teams API)
 pub async fn list_chats(limit: usize) -> Result<()> {
     chat::list_chats(limit).await

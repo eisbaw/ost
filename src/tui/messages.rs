@@ -8,8 +8,10 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Paragraph, Widget},
 };
 
+use crate::api;
+
 // ---------------------------------------------------------------------------
-// Data model (mock / demo)
+// Data model
 // ---------------------------------------------------------------------------
 
 /// A reaction on a message (e.g., thumbs-up x3).
@@ -59,134 +61,47 @@ pub struct MessagesState {
     pub selected: usize,
     /// Which message indices have their thread expanded.
     pub expanded_threads: Vec<bool>,
+    /// Whether messages are being loaded.
+    pub loading: bool,
 }
 
 impl Default for MessagesState {
     fn default() -> Self {
-        let messages = mock_messages();
-        let count = messages.len();
         Self {
-            channel_header: "Engineering Team > #general".to_string(),
-            expanded_threads: vec![true; count],
-            messages,
+            channel_header: "Select a channel or chat".to_string(),
+            messages: Vec::new(),
+            expanded_threads: Vec::new(),
             scroll_offset: 0,
             selected: 0,
+            loading: false,
         }
     }
 }
 
-/// Build mock messages matching the TUI spec.
-fn mock_messages() -> Vec<Message> {
-    vec![
-        Message {
-            sender: "Sarah Chen".to_string(),
-            timestamp: "9:15 AM today".to_string(),
-            content: "Hey team! Just pushed the new authentication module to\n\
-                      staging. Can someone help review? @Alex @Jordan"
-                .to_string(),
-            reactions: vec![
-                Reaction {
-                    label: "+1".to_string(),
-                    count: 3,
-                },
-                Reaction {
-                    label: "<3".to_string(),
-                    count: 1,
-                },
-            ],
-            reply_count: 2,
-            replies: vec![
-                Message {
-                    sender: "Alex Rivera".to_string(),
-                    timestamp: "9:22 AM".to_string(),
-                    content: "Looks good! Found one edge case - what happens\n\
-                              when the token expires mid-session?"
-                        .to_string(),
-                    reactions: vec![],
-                    reply_count: 0,
-                    replies: vec![],
-                    attachments: vec![],
-                },
-                Message {
-                    sender: "Sarah Chen".to_string(),
-                    timestamp: "9:25 AM".to_string(),
-                    content: "Good catch! Added refresh handler. See a3f2d1".to_string(),
-                    reactions: vec![],
-                    reply_count: 0,
-                    replies: vec![],
-                    attachments: vec![],
-                },
-            ],
-            attachments: vec![Attachment {
-                name: "auth-module-v2.zip".to_string(),
-            }],
-        },
-        Message {
-            sender: "Jordan Lee".to_string(),
-            timestamp: "9:45 AM today".to_string(),
-            content: "Reminder: Sprint planning at 2pm!\n\
-                      Please update your tickets before the meeting."
-                .to_string(),
-            reactions: vec![
-                Reaction {
-                    label: "+1".to_string(),
-                    count: 5,
-                },
-                Reaction {
-                    label: "eyes".to_string(),
-                    count: 2,
-                },
-            ],
-            reply_count: 0,
-            replies: vec![],
-            attachments: vec![],
-        },
-        Message {
-            sender: "Alex Rivera".to_string(),
-            timestamp: "10:02 AM today".to_string(),
-            content: "Has anyone looked at the CI pipeline? Builds are\n\
-                      taking 15+ minutes since yesterday."
-                .to_string(),
-            reactions: vec![Reaction {
-                label: "+1".to_string(),
-                count: 2,
-            }],
-            reply_count: 1,
-            replies: vec![Message {
-                sender: "Jordan Lee".to_string(),
-                timestamp: "10:10 AM".to_string(),
-                content: "Yeah, I noticed. The new integration tests added\n\
-                          ~8 min. Working on parallelizing them."
-                    .to_string(),
-                reactions: vec![],
-                reply_count: 0,
-                replies: vec![],
-                attachments: vec![],
-            }],
-            attachments: vec![],
-        },
-        Message {
-            sender: "Sarah Chen".to_string(),
-            timestamp: "10:30 AM today".to_string(),
-            content: "FYI: Updated the API docs for the auth endpoints.\n\
-                      Please review when you get a chance."
-                .to_string(),
-            reactions: vec![],
-            reply_count: 0,
-            replies: vec![],
-            attachments: vec![
-                Attachment {
-                    name: "api-docs-v3.pdf".to_string(),
-                },
-                Attachment {
-                    name: "changelog.md".to_string(),
-                },
-            ],
-        },
-    ]
-}
-
 impl MessagesState {
+    /// Update messages from API response.
+    pub fn update_messages(&mut self, header: &str, api_messages: Vec<api::MessageInfo>) {
+        self.channel_header = header.to_string();
+        self.messages = api_messages
+            .into_iter()
+            .map(|m| Message {
+                sender: m.sender,
+                timestamp: m.timestamp,
+                content: m.content,
+                reactions: Vec::new(),
+                reply_count: 0,
+                replies: Vec::new(),
+                attachments: Vec::new(),
+            })
+            .collect();
+        let count = self.messages.len();
+        self.expanded_threads = vec![true; count];
+        self.scroll_offset = 0;
+        // Select the last (newest) message so the view starts at the bottom.
+        self.selected = count.saturating_sub(1);
+        self.loading = false;
+    }
+
     /// Move selection up by one message.
     pub fn select_previous(&mut self) {
         if self.selected > 0 {
@@ -254,6 +169,28 @@ pub fn render(area: Rect, buf: &mut Buffer, state: &MessagesState, focused: bool
     );
 
     if messages_area.height == 0 {
+        return;
+    }
+
+    // Show loading indicator.
+    if state.loading {
+        let loading_area = Rect::new(messages_area.x, messages_area.y, messages_area.width, 1);
+        let line = Line::from(Span::styled(
+            " Loading messages...",
+            Style::default().fg(Color::DarkGray),
+        ));
+        Paragraph::new(line).render(loading_area, buf);
+        return;
+    }
+
+    // Show empty state.
+    if state.messages.is_empty() {
+        let empty_area = Rect::new(messages_area.x, messages_area.y, messages_area.width, 1);
+        let line = Line::from(Span::styled(
+            " Select a channel or chat to view messages",
+            Style::default().fg(Color::DarkGray),
+        ));
+        Paragraph::new(line).render(empty_area, buf);
         return;
     }
 

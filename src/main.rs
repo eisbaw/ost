@@ -204,7 +204,7 @@ async fn main() -> Result<()> {
             }
         },
         Commands::Tui => {
-            tui::run()?;
+            tui::run().await?;
         }
     }
 

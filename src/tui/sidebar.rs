@@ -8,22 +8,29 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Paragraph, Widget},
 };
 
+use crate::api;
+
 // ---------------------------------------------------------------------------
-// Data model (mock / demo)
+// Data model
 // ---------------------------------------------------------------------------
 
 /// A channel inside a team.
 #[derive(Clone)]
 pub struct Channel {
     pub name: String,
+    /// The real channel/thread ID from the API.
+    pub id: String,
     /// Number of unread messages (0 = no badge)
     pub unread: u32,
 }
 
 /// A team containing channels.
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct Team {
     pub name: String,
+    /// The real team ID from the API.
+    pub id: String,
     pub expanded: bool,
     pub channels: Vec<Channel>,
 }
@@ -32,6 +39,8 @@ pub struct Team {
 #[derive(Clone)]
 pub struct Chat {
     pub name: String,
+    /// The real chat/conversation thread ID from the API.
+    pub id: String,
     /// true = group chat (shows a different icon)
     pub is_group: bool,
     /// Number of unread messages (0 = no badge, use dot for "some")
@@ -40,100 +49,87 @@ pub struct Chat {
     pub online: bool,
 }
 
-/// Sidebar state: owns the mock data and tracks navigation.
+/// Sidebar state: owns the data and tracks navigation.
 pub struct SidebarState {
     pub teams: Vec<Team>,
     pub chats: Vec<Chat>,
     /// Index into the flat item list (0-based)
     pub selected: usize,
+    /// Whether data is still loading.
+    pub loading: bool,
 }
 
 impl Default for SidebarState {
     fn default() -> Self {
         Self {
-            teams: vec![
-                Team {
-                    name: "Engineering".into(),
-                    expanded: true,
-                    channels: vec![
-                        Channel {
-                            name: "general".into(),
-                            unread: 3,
-                        },
-                        Channel {
-                            name: "dev".into(),
-                            unread: 0,
-                        },
-                        Channel {
-                            name: "announce".into(),
-                            unread: 0,
-                        },
-                    ],
-                },
-                Team {
-                    name: "Design".into(),
-                    expanded: true,
-                    channels: vec![
-                        Channel {
-                            name: "general".into(),
-                            unread: 0,
-                        },
-                        Channel {
-                            name: "mockups".into(),
-                            unread: 1,
-                        },
-                    ],
-                },
-                Team {
-                    name: "Marketing".into(),
-                    expanded: false,
-                    channels: vec![
-                        Channel {
-                            name: "campaigns".into(),
-                            unread: 0,
-                        },
-                        Channel {
-                            name: "analytics".into(),
-                            unread: 0,
-                        },
-                    ],
-                },
-                Team {
-                    name: "HR".into(),
-                    expanded: false,
-                    channels: vec![Channel {
-                        name: "general".into(),
-                        unread: 0,
-                    }],
-                },
-            ],
-            chats: vec![
-                Chat {
-                    name: "Dave".into(),
-                    is_group: false,
-                    unread: 0,
-                    online: true,
-                },
-                Chat {
-                    name: "Eve".into(),
-                    is_group: false,
-                    unread: 2,
-                    online: false,
-                },
-                Chat {
-                    name: "Frank".into(),
-                    is_group: false,
-                    unread: 0,
-                    online: false,
-                },
-                Chat {
-                    name: "Project X".into(),
-                    is_group: true,
-                    unread: 0,
-                    online: false,
-                },
-            ],
+            teams: Vec::new(),
+            chats: Vec::new(),
             selected: 0,
+            loading: true,
+        }
+    }
+}
+
+impl SidebarState {
+    /// Update teams data from API response.
+    pub fn update_teams(&mut self, teams: Vec<api::TeamInfo>) {
+        self.teams = teams
+            .into_iter()
+            .map(|t| Team {
+                name: t.name,
+                id: t.id,
+                expanded: true,
+                channels: t
+                    .channels
+                    .into_iter()
+                    .map(|c| Channel {
+                        name: c.name,
+                        id: c.id,
+                        unread: 0,
+                    })
+                    .collect(),
+            })
+            .collect();
+        self.clamp_selection();
+    }
+
+    /// Update chats data from API response.
+    pub fn update_chats(&mut self, chats: Vec<api::ChatInfo>) {
+        self.chats = chats
+            .into_iter()
+            .map(|c| Chat {
+                name: c.name,
+                id: c.id,
+                is_group: c.is_group,
+                unread: 0,
+                online: false,
+            })
+            .collect();
+        self.clamp_selection();
+    }
+
+    /// Get the chat/channel ID of the currently selected item.
+    pub fn selected_item_id(&self) -> Option<String> {
+        let items = self.flat_items();
+        match items.get(self.selected)? {
+            SidebarItem::Channel(ti, ci) => Some(self.teams[*ti].channels[*ci].id.clone()),
+            SidebarItem::Chat(ci) => Some(self.chats[*ci].id.clone()),
+            _ => None,
+        }
+    }
+
+    /// Get the display name of the currently selected item.
+    pub fn selected_item_name(&self) -> Option<String> {
+        let items = self.flat_items();
+        match items.get(self.selected)? {
+            SidebarItem::Channel(ti, ci) => {
+                let team = &self.teams[*ti];
+                let channel = &team.channels[*ci];
+                Some(format!("{} > #{}", team.name, channel.name))
+            }
+            SidebarItem::Chat(ci) => Some(self.chats[*ci].name.clone()),
+            SidebarItem::Team(ti) => Some(self.teams[*ti].name.clone()),
+            _ => None,
         }
     }
 }
@@ -289,6 +285,19 @@ pub fn render(area: Rect, buf: &mut Buffer, state: &SidebarState, focused: bool)
 
     let inner = block.inner(area);
     block.render(area, buf);
+
+    // Show loading indicator if data hasn't arrived yet.
+    if state.loading && state.teams.is_empty() && state.chats.is_empty() {
+        if inner.height > 0 && inner.width > 0 {
+            let loading_area = Rect::new(inner.x, inner.y, inner.width, 1);
+            let line = Line::from(Span::styled(
+                " Loading...",
+                Style::default().fg(Color::DarkGray),
+            ));
+            Paragraph::new(line).render(loading_area, buf);
+        }
+        return;
+    }
 
     let items = state.flat_items();
     let available_height = inner.height as usize;

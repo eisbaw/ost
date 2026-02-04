@@ -11,20 +11,41 @@ struct PresenceResponse {
     activity: String,
 }
 
-/// Get current presence status
+/// Get current presence status (prints to stdout).
 pub async fn get_presence() -> Result<()> {
     let client = TeamsClient::new().await?;
+    let info = get_presence_data(&client).await?;
+
+    println!("\nPresence Status:");
+    println!("  Availability: {}", info.availability);
+    println!("  Activity: {}", info.activity);
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Data-returning API functions for TUI integration
+// ---------------------------------------------------------------------------
+
+/// Presence info for TUI display.
+#[allow(dead_code)]
+pub struct PresenceInfo {
+    pub availability: String,
+    pub activity: String,
+}
+
+/// Fetch current presence and return structured data.
+pub async fn get_presence_data(client: &TeamsClient) -> Result<PresenceInfo> {
     let resp = client.graph_get("/me/presence").await?;
     let presence: PresenceResponse = resp
         .json()
         .await
         .context("Failed to parse presence response")?;
 
-    println!("\nPresence Status:");
-    println!("  Availability: {}", presence.availability);
-    println!("  Activity: {}", presence.activity);
-
-    Ok(())
+    Ok(PresenceInfo {
+        availability: presence.availability,
+        activity: presence.activity,
+    })
 }
 
 /// Set presence status

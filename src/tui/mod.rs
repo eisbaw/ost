@@ -3,6 +3,7 @@
 //! Terminal user interface using Ratatui.
 
 mod app;
+mod backend;
 mod compose;
 mod help;
 mod messages;

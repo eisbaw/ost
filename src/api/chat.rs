@@ -94,12 +94,118 @@ fn conversation_name(conv: &Conversation) -> String {
     conv.id.as_deref().unwrap_or("[unknown]").to_string()
 }
 
-/// List recent chats using the native Teams API.
-/// Tries multiple endpoints/auth combinations since different tenants may
-/// require different approaches.
+/// List recent chats using the native Teams API (prints to stdout).
 pub async fn list_chats(limit: usize) -> Result<()> {
     let client = TeamsClient::new().await?;
+    let chats = list_chats_data(&client, limit).await?;
 
+    println!("\nRecent Chats:");
+    println!("{:-<60}", "");
+
+    if chats.is_empty() {
+        println!("  (no chats found)");
+        return Ok(());
+    }
+
+    for chat in &chats {
+        println!("{}", chat.name);
+        println!("  ID: {}", chat.id);
+
+        if let Some(ref time) = chat.last_message_time {
+            println!("  Last: {}", time);
+        }
+        if let Some(ref preview) = chat.last_message_preview {
+            if !preview.trim().is_empty() {
+                let sender = chat.last_message_sender.as_deref().unwrap_or("?");
+                println!("  [{}]: {}", sender, preview.trim());
+            }
+        }
+
+        println!();
+    }
+
+    Ok(())
+}
+
+/// Read messages from a specific chat thread (prints to stdout).
+pub async fn read_messages(chat_id: &str, limit: usize) -> Result<()> {
+    let client = TeamsClient::new().await?;
+    let msgs = read_messages_data(&client, chat_id, limit).await?;
+
+    if msgs.is_empty() {
+        println!("(no messages)");
+        return Ok(());
+    }
+
+    for msg in &msgs {
+        println!("[{}] {}: {}", msg.timestamp, msg.sender, msg.content);
+    }
+
+    Ok(())
+}
+
+/// Send a message to a chat thread using the native API.
+pub async fn send_message(chat_id: &str, message: &str) -> Result<()> {
+    let client = TeamsClient::new().await?;
+    send_message_with_client(&client, chat_id, message).await?;
+    println!("Message sent.");
+    Ok(())
+}
+
+/// HTML-escape text for embedding in Teams RichText/Html messages.
+fn html_escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+/// Send a message using an existing client (shared helper).
+pub async fn send_message_with_client(
+    client: &TeamsClient,
+    chat_id: &str,
+    message: &str,
+) -> Result<()> {
+    let base = client.chat_service_url();
+    let url = format!("{}/v1/users/ME/conversations/{}/messages", base, chat_id);
+
+    let escaped = html_escape(message);
+    let body = serde_json::json!({
+        "content": format!("<p>{}</p>", escaped),
+        "messagetype": "RichText/Html",
+        "contenttype": "text"
+    });
+
+    tracing::debug!("Sending message to {}", url);
+    client.chat_post(&url, &body).await?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Data-returning API functions for TUI integration
+// ---------------------------------------------------------------------------
+
+/// Chat metadata for TUI display.
+#[allow(dead_code)]
+pub struct ChatInfo {
+    pub id: String,
+    pub name: String,
+    pub is_group: bool,
+    pub last_message_time: Option<String>,
+    pub last_message_sender: Option<String>,
+    pub last_message_preview: Option<String>,
+}
+
+/// A single message for TUI display.
+pub struct MessageInfo {
+    pub sender: String,
+    pub timestamp: String,
+    pub content: String,
+}
+
+/// List recent chats and return structured data.
+pub async fn list_chats_data(client: &TeamsClient, limit: usize) -> Result<Vec<ChatInfo>> {
     // Strategy 1: CSA AFD endpoint with Bearer auth
     let csa_url = format!(
         "https://teams.microsoft.com/api/csa/api/v1/teams/users/ME/conversations?view=mychats&pageSize={}",
@@ -132,6 +238,7 @@ pub async fn list_chats(limit: usize) -> Result<()> {
             }
         }
     };
+
     let body: ConversationsResponse = resp
         .json()
         .await
@@ -139,28 +246,26 @@ pub async fn list_chats(limit: usize) -> Result<()> {
 
     let conversations = body.conversations.unwrap_or_default();
 
-    println!("\nRecent Chats:");
-    println!("{:-<60}", "");
-
-    if conversations.is_empty() {
-        println!("  (no chats found)");
-        return Ok(());
-    }
-
+    let mut chats = Vec::new();
     for conv in &conversations {
+        let id = conv.id.as_deref().unwrap_or("").to_string();
+        if id.is_empty() {
+            continue;
+        }
+
         let name = conversation_name(conv);
-        let id = conv.id.as_deref().unwrap_or("?");
+        let is_group = id.contains("thread") || id.contains("meeting");
 
-        println!("{}", name);
-        println!("  ID: {}", id);
-
-        if let Some(ref msg) = conv.last_message {
-            if let Some(ref time) = msg.original_arrival_time {
-                println!("  Last: {}", time);
-            }
-            if let Some(ref content) = msg.content {
-                let text = strip_html(content);
-                let display = if text.len() > 80 {
+        let (last_time, last_sender, last_preview) = if let Some(ref msg) = conv.last_message {
+            let time = msg
+                .original_arrival_time
+                .as_deref()
+                .or(msg.compose_time.as_deref())
+                .map(String::from);
+            let sender = msg.im_display_name.clone();
+            let preview = msg.content.as_deref().map(|c| {
+                let text = strip_html(c);
+                if text.len() > 80 {
                     let end = text
                         .char_indices()
                         .map(|(i, _)| i)
@@ -170,23 +275,32 @@ pub async fn list_chats(limit: usize) -> Result<()> {
                     format!("{}...", &text[..end])
                 } else {
                     text
-                };
-                if !display.trim().is_empty() {
-                    let sender = msg.im_display_name.as_deref().unwrap_or("?");
-                    println!("  [{}]: {}", sender, display.trim());
                 }
-            }
-        }
+            });
+            (time, sender, preview)
+        } else {
+            (None, None, None)
+        };
 
-        println!();
+        chats.push(ChatInfo {
+            id,
+            name,
+            is_group,
+            last_message_time: last_time,
+            last_message_sender: last_sender,
+            last_message_preview: last_preview,
+        });
     }
 
-    Ok(())
+    Ok(chats)
 }
 
-/// Read messages from a specific chat thread.
-pub async fn read_messages(chat_id: &str, limit: usize) -> Result<()> {
-    let client = TeamsClient::new().await?;
+/// Read messages from a specific chat thread and return structured data.
+pub async fn read_messages_data(
+    client: &TeamsClient,
+    chat_id: &str,
+    limit: usize,
+) -> Result<Vec<MessageInfo>> {
     let base = client.chat_service_url();
     let url = format!(
         "{}/v1/users/ME/conversations/{}/messages?pageSize={}",
@@ -202,15 +316,11 @@ pub async fn read_messages(chat_id: &str, limit: usize) -> Result<()> {
 
     let messages = body.messages.unwrap_or_default();
 
-    if messages.is_empty() {
-        println!("(no messages)");
-        return Ok(());
-    }
-
     // Messages come newest-first; reverse for chronological display
     let mut msgs: Vec<&NativeMessage> = messages.iter().collect();
     msgs.reverse();
 
+    let mut result = Vec::new();
     for msg in &msgs {
         let msgtype = msg.messagetype.as_deref().unwrap_or("");
         // Skip non-text messages (e.g. ThreadActivity/*)
@@ -218,12 +328,13 @@ pub async fn read_messages(chat_id: &str, limit: usize) -> Result<()> {
             continue;
         }
 
-        let sender = msg.im_display_name.as_deref().unwrap_or("?");
+        let sender = msg.im_display_name.as_deref().unwrap_or("?").to_string();
         let time = msg
             .original_arrival_time
             .as_deref()
             .or(msg.compose_time.as_deref())
-            .unwrap_or("");
+            .unwrap_or("")
+            .to_string();
         let content = msg.content.as_deref().unwrap_or("");
         let text = strip_html(content);
 
@@ -231,27 +342,12 @@ pub async fn read_messages(chat_id: &str, limit: usize) -> Result<()> {
             continue;
         }
 
-        println!("[{}] {}: {}", time, sender, text.trim());
+        result.push(MessageInfo {
+            sender,
+            timestamp: time,
+            content: text.trim().to_string(),
+        });
     }
 
-    Ok(())
-}
-
-/// Send a message to a chat thread using the native API.
-pub async fn send_message(chat_id: &str, message: &str) -> Result<()> {
-    let client = TeamsClient::new().await?;
-    let base = client.chat_service_url();
-    let url = format!("{}/v1/users/ME/conversations/{}/messages", base, chat_id);
-
-    let body = serde_json::json!({
-        "content": format!("<p>{}</p>", message),
-        "messagetype": "RichText/Html",
-        "contenttype": "text"
-    });
-
-    tracing::debug!("Sending message to {}", url);
-    client.chat_post(&url, &body).await?;
-
-    println!("Message sent.");
-    Ok(())
+    Ok(result)
 }
