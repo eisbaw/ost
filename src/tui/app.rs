@@ -6,6 +6,7 @@ use ratatui::DefaultTerminal;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::time::Duration;
 
+use super::messages::MessagesState;
 use super::sidebar::SidebarState;
 use super::ui;
 
@@ -49,6 +50,8 @@ pub struct App {
     pub active_pane: Pane,
     /// Sidebar state (teams/channels/chats + navigation)
     pub sidebar: SidebarState,
+    /// Messages pane state
+    pub messages: MessagesState,
 }
 
 impl Default for App {
@@ -66,6 +69,7 @@ impl Default for App {
                 selected: 1,
                 ..SidebarState::default()
             },
+            messages: MessagesState::default(),
         }
     }
 }
@@ -102,6 +106,18 @@ impl App {
                         KeyCode::Enter if self.active_pane == Pane::Sidebar => {
                             self.sidebar.toggle_expand();
                             self.sidebar.clamp_selection();
+                        }
+                        // Messages pane keys
+                        KeyCode::Up | KeyCode::Char('k') if self.active_pane == Pane::Messages => {
+                            self.messages.select_previous();
+                        }
+                        KeyCode::Down | KeyCode::Char('j')
+                            if self.active_pane == Pane::Messages =>
+                        {
+                            self.messages.select_next();
+                        }
+                        KeyCode::Enter if self.active_pane == Pane::Messages => {
+                            self.messages.toggle_thread();
                         }
                         _ => {}
                     }

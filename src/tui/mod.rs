@@ -3,6 +3,7 @@
 //! Terminal user interface using Ratatui.
 
 mod app;
+mod messages;
 mod sidebar;
 mod ui;
 

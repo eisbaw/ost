@@ -5,11 +5,12 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Widget},
+    widgets::{Paragraph, Widget},
     Frame,
 };
 
 use super::app::{App, Pane};
+use super::messages;
 use super::sidebar;
 
 /// Returns status indicator symbol and color based on online state
@@ -48,8 +49,13 @@ pub fn render(frame: &mut Frame, app: &App) {
         app.active_pane == Pane::Sidebar,
     );
 
-    // Render main content area (placeholder for now)
-    render_main(content_area, frame.buffer_mut());
+    // Render messages pane
+    messages::render(
+        content_area,
+        frame.buffer_mut(),
+        &app.messages,
+        app.active_pane == Pane::Messages,
+    );
 
     // Render status bar
     render_status(status_area, frame.buffer_mut(), app);
@@ -95,19 +101,6 @@ fn render_header(area: Rect, buf: &mut Buffer, app: &App) {
     let header = Paragraph::new(header_line).style(Style::default().bg(Color::DarkGray));
 
     header.render(area, buf);
-}
-
-/// Render the main content area (placeholder)
-fn render_main(area: Rect, buf: &mut Buffer) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Main Content ");
-
-    let placeholder = Paragraph::new("Press 'q' to quit")
-        .block(block)
-        .style(Style::default().fg(Color::Gray));
-
-    placeholder.render(area, buf);
 }
 
 /// Render the status bar
