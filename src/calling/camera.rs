@@ -208,13 +208,25 @@ pub fn cam_test() -> anyhow::Result<()> {
     // Wait for display thread to finish SDL2 teardown
     display.join();
 
-    println!("Recording : {:.3}s  ({} frames, {:.1} fps)", capture_elapsed, n_frames, capture_fps);
-    println!("Playback  : {:.3}s  ({} frames, {:.1} fps)", playback_elapsed, n_frames, playback_fps);
+    println!(
+        "Recording : {:.3}s  ({} frames, {:.1} fps)",
+        capture_elapsed, n_frames, capture_fps
+    );
+    println!(
+        "Playback  : {:.3}s  ({} frames, {:.1} fps)",
+        playback_elapsed, n_frames, playback_fps
+    );
     let ratio = playback_elapsed / capture_elapsed;
     if ratio > 1.05 {
-        println!("Playback was {:.0}% slower than recording (frame interval too long)", (ratio - 1.0) * 100.0);
+        println!(
+            "Playback was {:.0}% slower than recording (frame interval too long)",
+            (ratio - 1.0) * 100.0
+        );
     } else if ratio < 0.95 {
-        println!("Playback was {:.0}% faster than recording", (1.0 - ratio) * 100.0);
+        println!(
+            "Playback was {:.0}% faster than recording",
+            (1.0 - ratio) * 100.0
+        );
     } else {
         println!("Playback matched recording duration");
     }

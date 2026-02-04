@@ -8,6 +8,7 @@ mod calling;
 mod config;
 mod models;
 mod trouter;
+mod tui;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -121,6 +122,9 @@ enum Commands {
     /// Test camera capture: record 3 seconds then play back in SDL2 window
     #[cfg(feature = "video-capture")]
     CamTest,
+
+    /// Launch the terminal user interface
+    Tui,
 }
 
 #[tokio::main]
@@ -168,8 +172,19 @@ async fn main() -> Result<()> {
         Commands::Trouter => {
             trouter::connect_and_run().await?;
         }
-        Commands::CallTest { duration, record, echo, thread, camera, display, tone } => {
-            calling::call_test::run_call_test(duration, record, echo, thread, camera, display, tone).await?;
+        Commands::CallTest {
+            duration,
+            record,
+            echo,
+            thread,
+            camera,
+            display,
+            tone,
+        } => {
+            calling::call_test::run_call_test(
+                duration, record, echo, thread, camera, display, tone,
+            )
+            .await?;
         }
         #[cfg(feature = "audio")]
         Commands::MicTest => {
@@ -188,6 +203,9 @@ async fn main() -> Result<()> {
                 api::get_presence().await?;
             }
         },
+        Commands::Tui => {
+            tui::run()?;
+        }
     }
 
     Ok(())

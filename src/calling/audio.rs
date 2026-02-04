@@ -390,7 +390,11 @@ pub fn mic_test() -> anyhow::Result<()> {
         }
     }
     drop(capture);
-    println!("\n\nCaptured {} frames ({:.1}s)", frames.len(), frames.len() as f64 * 0.02);
+    println!(
+        "\n\nCaptured {} frames ({:.1}s)",
+        frames.len(),
+        frames.len() as f64 * 0.02
+    );
 
     // Play back
     println!("Playing back...\n");

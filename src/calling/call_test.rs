@@ -9,9 +9,9 @@ use base64::Engine;
 use serde::Deserialize;
 use tokio::sync::Mutex;
 
-use crate::calling::{ice, recording, rtcp, rtp, sdp, signaling, srtp, test_tone, video};
 #[cfg(feature = "video-capture")]
 use crate::calling::{camera, codec, display};
+use crate::calling::{ice, recording, rtcp, rtp, sdp, signaling, srtp, test_tone, video};
 use crate::config::Config;
 use crate::trouter::{registrar, session, websocket};
 
@@ -61,7 +61,15 @@ impl CallTestResult {
 /// - `echo=true`: Call the Echo / Call Quality Tester bot
 /// - `thread_override=Some(id)`: Call a specific 1:1 chat thread
 /// - Otherwise: Call the av-test channel (requires TEAMS_AV_TEST_THREAD_ID env var)
-pub async fn run_call_test(duration_secs: u64, record: bool, echo: bool, thread_override: Option<String>, use_camera: bool, use_display: bool, tone_mode: bool) -> Result<CallTestResult> {
+pub async fn run_call_test(
+    duration_secs: u64,
+    record: bool,
+    echo: bool,
+    thread_override: Option<String>,
+    use_camera: bool,
+    use_display: bool,
+    tone_mode: bool,
+) -> Result<CallTestResult> {
     let config = Config::load().context("Failed to load config")?;
     let skype_token = config
         .get_skype_token()
@@ -293,21 +301,31 @@ pub async fn run_call_test(duration_secs: u64, record: bool, echo: bool, thread_
     let (phase1, _phase2) = if is_1to1_call {
         // 1:1 call: single POST to epconv with SDP
         tracing::info!("Creating 1:1 call (single-shot epconv with SDP)...");
-        let (created, joined) = signaling::create_1to1_call(
-            &http, &epconv_url, &conv_params, &offer_result.sdp,
-        ).await?;
+        let (created, joined) =
+            signaling::create_1to1_call(&http, &epconv_url, &conv_params, &offer_result.sdp)
+                .await?;
         (created, joined)
     } else {
         // Channel call: two-phase (create conversation, then join with SDP)
         tracing::info!("Phase 1: Creating conversation...");
         let created = signaling::create_conversation(&http, &epconv_url, &conv_params).await?;
-        tracing::info!("Phase 1 complete: conversationController = {}", created.conversation_controller);
+        tracing::info!(
+            "Phase 1 complete: conversationController = {}",
+            created.conversation_controller
+        );
 
         tracing::info!("Phase 2: Joining conversation with SDP...");
         let joined = signaling::join_conversation_with_sdp(
-            &http, &created.conversation_controller, &conv_params, &offer_result.sdp,
-        ).await?;
-        tracing::info!("Phase 2 complete. CC active URL: {:?}", joined.cc_active_url);
+            &http,
+            &created.conversation_controller,
+            &conv_params,
+            &offer_result.sdp,
+        )
+        .await?;
+        tracing::info!(
+            "Phase 2 complete. CC active URL: {:?}",
+            joined.cc_active_url
+        );
         (created, joined)
     };
     println!("call_placed=true");
@@ -318,7 +336,14 @@ pub async fn run_call_test(duration_secs: u64, record: bool, echo: bool, thread_
         signaling::invite_echo_bot(&http, &phase1.conversation_controller, &conv_params).await?;
     } else if let Some(ref mri) = callee_mri {
         tracing::info!("Inviting user {}...", mri);
-        signaling::invite_user(&http, &phase1.conversation_controller, &conv_params, mri, use_camera).await?;
+        signaling::invite_user(
+            &http,
+            &phase1.conversation_controller,
+            &conv_params,
+            mri,
+            use_camera,
+        )
+        .await?;
     }
 
     // 7. Wait for mediaAnswer on Trouter
@@ -343,19 +368,17 @@ pub async fn run_call_test(duration_secs: u64, record: bool, echo: bool, thread_
 
     // 7b. Phase 3: Acknowledge call acceptance and register CC callbacks
     if let Some(ref ack_url) = acceptance.acknowledgement_url {
-        if let Err(e) =
-            signaling::acknowledge_call_acceptance(&http, ack_url, &conv_params).await
-        {
+        if let Err(e) = signaling::acknowledge_call_acceptance(&http, ack_url, &conv_params).await {
             tracing::warn!("Failed to acknowledge call acceptance: {:#}", e);
         }
     } else {
-        tracing::error!("No acknowledgement URL in callAcceptance — call WILL time out (430/10065)");
+        tracing::error!(
+            "No acknowledgement URL in callAcceptance — call WILL time out (430/10065)"
+        );
     }
 
     if let Some(ref leg_url) = acceptance.call_leg_url {
-        if let Err(e) =
-            signaling::register_cc_callbacks(&http, leg_url, &conv_params).await
-        {
+        if let Err(e) = signaling::register_cc_callbacks(&http, leg_url, &conv_params).await {
             tracing::warn!("Failed to register CC callbacks: {:#}", e);
         }
     } else {
@@ -435,7 +458,10 @@ pub async fn run_call_test(duration_secs: u64, record: bool, echo: bool, thread_
                     std::mem::forget(_capture);
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to start camera: {:#}. Falling back to black frames.", e);
+                    tracing::warn!(
+                        "Failed to start camera: {:#}. Falling back to black frames.",
+                        e
+                    );
                 }
             }
         }
@@ -459,8 +485,14 @@ pub async fn run_call_test(duration_secs: u64, record: bool, echo: bool, thread_
         }
     }
 
-    let outgoing_handles =
-        spawn_media_leg(outgoing_leg, &caller_mri, Some(recorder.clone()), false, speaker_tx, mic_rx);
+    let outgoing_handles = spawn_media_leg(
+        outgoing_leg,
+        &caller_mri,
+        Some(recorder.clone()),
+        false,
+        speaker_tx,
+        mic_rx,
+    );
 
     // 8b. Start recording in background after a short delay to let audio establish.
     // Recording is non-blocking: if it fails, the call continues normally.
@@ -567,8 +599,12 @@ pub async fn run_call_test(duration_secs: u64, record: bool, echo: bool, thread_
             for &s in samples {
                 let _ = f.write_all(&s.to_le_bytes());
             }
-            tracing::info!("Raw PCM i16 LE saved to {} ({} samples, {:.1}s)",
-                pcm_path, samples.len(), samples.len() as f64 / 8000.0);
+            tracing::info!(
+                "Raw PCM i16 LE saved to {} ({} samples, {:.1}s)",
+                pcm_path,
+                samples.len(),
+                samples.len() as f64 / 8000.0
+            );
         }
     }
 
@@ -695,7 +731,12 @@ async fn setup_media_leg(
     // Decompress and log the full SDP for debugging
     let decompressed = crate::calling::sdp_compress::decompress_sdp(remote_sdp)
         .unwrap_or_else(|_| remote_sdp.to_string());
-    tracing::info!("[{}] Remote SDP ({} bytes):\n{}", label, decompressed.len(), decompressed);
+    tracing::info!(
+        "[{}] Remote SDP ({} bytes):\n{}",
+        label,
+        decompressed.len(),
+        decompressed
+    );
 
     let remote_offer = sdp::parse_sdp_offer(remote_sdp)
         .with_context(|| format!("Failed to parse {} remote SDP", label))?;
@@ -765,8 +806,13 @@ async fn setup_media_leg(
     let video_socket = Arc::new(video_socket);
     let video_remote_addr = if let Some(ref vid) = remote_offer.video {
         let vid_candidates = ice::parse_candidates_from_sdp_section(remote_sdp, "video");
-        tracing::info!("[{}] Video ICE: {} candidates from SDP, remote video ufrag={}, pwd_len={}",
-            label, vid_candidates.len(), vid.ice_ufrag, vid.ice_pwd.len());
+        tracing::info!(
+            "[{}] Video ICE: {} candidates from SDP, remote video ufrag={}, pwd_len={}",
+            label,
+            vid_candidates.len(),
+            vid.ice_ufrag,
+            vid.ice_pwd.len()
+        );
         let vid_remote_creds = ice::IceCredentials {
             ufrag: vid.ice_ufrag.clone(),
             pwd: vid.ice_pwd.clone(),
@@ -1170,16 +1216,14 @@ fn spawn_media_leg(
                     {
                         if let (Some(ref rx), Some(ref mut enc)) = (&camera_rx, &mut encoder) {
                             match rx.try_recv() {
-                                Ok(frame) if frame.width > 0 => {
-                                    match enc.encode(&frame.data) {
-                                        Ok(nals) if !nals.is_empty() => nals,
-                                        Ok(_) => video::generate_black_iframe(),
-                                        Err(e) => {
-                                            tracing::debug!("[{}] Encode error: {:#}", label, e);
-                                            video::generate_black_iframe()
-                                        }
+                                Ok(frame) if frame.width > 0 => match enc.encode(&frame.data) {
+                                    Ok(nals) if !nals.is_empty() => nals,
+                                    Ok(_) => video::generate_black_iframe(),
+                                    Err(e) => {
+                                        tracing::debug!("[{}] Encode error: {:#}", label, e);
+                                        video::generate_black_iframe()
                                     }
-                                }
+                                },
                                 _ => video::generate_black_iframe(),
                             }
                         } else {
@@ -1240,8 +1284,9 @@ fn spawn_media_leg(
             let mut depacketizer = video::VideoDepacketizer::new();
 
             #[cfg(feature = "video-capture")]
-            let mut decoder = display_tx.as_ref().and_then(|_| {
-                match codec::H264Decoder::new() {
+            let mut decoder = display_tx
+                .as_ref()
+                .and_then(|_| match codec::H264Decoder::new() {
                     Ok(dec) => {
                         tracing::info!("[{}] H.264 decoder initialized for display", label);
                         Some(dec)
@@ -1250,8 +1295,7 @@ fn spawn_media_leg(
                         tracing::warn!("[{}] Failed to create H.264 decoder: {:#}", label, e);
                         None
                     }
-                }
-            });
+                });
 
             loop {
                 match socket.recv_from(&mut buf).await {
@@ -1324,25 +1368,36 @@ fn spawn_media_leg(
                                     match depacketizer.depacketize(&pkt.payload, marker) {
                                         Ok(Some(nal)) => {
                                             #[cfg(feature = "video-capture")]
-                                            if let (Some(ref mut dec), Some(ref tx)) = (&mut decoder, &display_tx) {
+                                            if let (Some(ref mut dec), Some(ref tx)) =
+                                                (&mut decoder, &display_tx)
+                                            {
                                                 match dec.decode(&nal) {
                                                     Ok(Some(frame)) => {
-                                                        let _ = tx.try_send(display::DisplayFrame {
-                                                            width: frame.width,
-                                                            height: frame.height,
-                                                            data: frame.data,
-                                                        });
+                                                        let _ =
+                                                            tx.try_send(display::DisplayFrame {
+                                                                width: frame.width,
+                                                                height: frame.height,
+                                                                data: frame.data,
+                                                            });
                                                     }
                                                     Ok(None) => {} // decoder needs more data
                                                     Err(e) => {
-                                                        tracing::debug!("[{}] Decode error: {:#}", label, e);
+                                                        tracing::debug!(
+                                                            "[{}] Decode error: {:#}",
+                                                            label,
+                                                            e
+                                                        );
                                                     }
                                                 }
                                             }
                                         }
                                         Ok(None) => {} // more fragments needed
                                         Err(e) => {
-                                            tracing::debug!("[{}] Depacketize error: {:#}", label, e);
+                                            tracing::debug!(
+                                                "[{}] Depacketize error: {:#}",
+                                                label,
+                                                e
+                                            );
                                         }
                                     }
                                 }
@@ -1433,7 +1488,10 @@ struct CallAcceptanceResponse {
 fn check_call_end(v: &serde_json::Value) -> Option<String> {
     let call_end = v.get("callEnd")?;
     let code = call_end.get("code").and_then(|c| c.as_u64()).unwrap_or(0);
-    let sub_code = call_end.get("subCode").and_then(|c| c.as_u64()).unwrap_or(0);
+    let sub_code = call_end
+        .get("subCode")
+        .and_then(|c| c.as_u64())
+        .unwrap_or(0);
     let phrase = call_end
         .get("phrase")
         .and_then(|s| s.as_str())
@@ -1523,7 +1581,8 @@ pub fn extract_call_payload(frame: &str) -> Option<serde_json::Value> {
                 // If gzip, decode base64 then decompress
                 if is_gzip {
                     if let Some(decompressed) = decompress_gzip_base64(body_str) {
-                        if let Ok(inner) = serde_json::from_str::<serde_json::Value>(&decompressed) {
+                        if let Ok(inner) = serde_json::from_str::<serde_json::Value>(&decompressed)
+                        {
                             return Some(inner);
                         }
                     }
@@ -1824,15 +1883,15 @@ fn write_wav(path: &str, samples: &[i16], sample_rate: u32) -> anyhow::Result<()
     f.write_all(b"WAVE")?;
     // fmt chunk
     f.write_all(b"fmt ")?;
-    f.write_all(&16u32.to_le_bytes())?;       // chunk size
-    f.write_all(&1u16.to_le_bytes())?;         // PCM format
-    f.write_all(&1u16.to_le_bytes())?;         // mono
-    f.write_all(&sample_rate.to_le_bytes())?;  // sample rate
+    f.write_all(&16u32.to_le_bytes())?; // chunk size
+    f.write_all(&1u16.to_le_bytes())?; // PCM format
+    f.write_all(&1u16.to_le_bytes())?; // mono
+    f.write_all(&sample_rate.to_le_bytes())?; // sample rate
     let byte_rate = sample_rate * 2;
-    f.write_all(&byte_rate.to_le_bytes())?;    // byte rate
-    f.write_all(&2u16.to_le_bytes())?;         // block align
-    f.write_all(&16u16.to_le_bytes())?;        // bits per sample
-    // data chunk
+    f.write_all(&byte_rate.to_le_bytes())?; // byte rate
+    f.write_all(&2u16.to_le_bytes())?; // block align
+    f.write_all(&16u16.to_le_bytes())?; // bits per sample
+                                        // data chunk
     f.write_all(b"data")?;
     f.write_all(&data_len.to_le_bytes())?;
     for &s in samples {

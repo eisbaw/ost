@@ -36,7 +36,12 @@ impl VideoDisplay {
             }
         });
 
-        Ok((VideoDisplay { handle: Some(handle) }, tx))
+        Ok((
+            VideoDisplay {
+                handle: Some(handle),
+            },
+            tx,
+        ))
     }
 
     /// Wait for the display thread to finish (call after dropping the frame sender).
@@ -107,18 +112,10 @@ fn display_loop(title: &str, rx: mpsc::Receiver<DisplayFrame>) -> Result<()> {
                     current_h = frame.height;
                     texture = Some(
                         texture_creator
-                            .create_texture_streaming(
-                                PixelFormatEnum::IYUV,
-                                current_w,
-                                current_h,
-                            )
+                            .create_texture_streaming(PixelFormatEnum::IYUV, current_w, current_h)
                             .context("Failed to create YUV texture")?,
                     );
-                    tracing::info!(
-                        "Display texture created: {}x{}",
-                        current_w,
-                        current_h
-                    );
+                    tracing::info!("Display texture created: {}x{}", current_w, current_h);
                 }
 
                 if let Some(ref mut tex) = texture {

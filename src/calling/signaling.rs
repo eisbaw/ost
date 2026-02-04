@@ -608,11 +608,7 @@ pub async fn register_cc_callbacks(
         tracing::info!("CC callbacks registered ({}): {}", status, body);
         Ok(())
     } else {
-        anyhow::bail!(
-            "CC callback registration failed ({}): {}",
-            status,
-            body
-        );
+        anyhow::bail!("CC callback registration failed ({}): {}", status, body);
     }
 }
 
@@ -728,7 +724,10 @@ pub async fn create_echo_call(
         }
     });
 
-    tracing::info!("Echo call: POST {} (single-shot epconv with SDP, scenario=UserInitiatedTestCall)", epconv_url);
+    tracing::info!(
+        "Echo call: POST {} (single-shot epconv with SDP, scenario=UserInitiatedTestCall)",
+        epconv_url
+    );
 
     let resp = http
         .post(epconv_url)
@@ -754,7 +753,11 @@ pub async fn create_echo_call(
     tracing::info!("Echo call response: {} ({} bytes)", status, body.len());
     tracing::debug!("Echo call response body: {}", &body[..body.len().min(2000)]);
     for (k, v) in headers.iter() {
-        tracing::debug!("Echo call header: {}: {}", k, v.to_str().unwrap_or("(binary)"));
+        tracing::debug!(
+            "Echo call header: {}: {}",
+            k,
+            v.to_str().unwrap_or("(binary)")
+        );
     }
 
     if !status.is_success() {
@@ -860,8 +863,15 @@ pub async fn invite_echo_bot(
     // epconv message-id would cause a cached empty response.
     let echo_bot_msg_id = uuid::Uuid::new_v4().to_string();
 
-    tracing::info!("Inviting Echo bot -> POST {} (msg_id={})", add_url, echo_bot_msg_id);
-    tracing::debug!("Echo bot invite payload: {}", serde_json::to_string_pretty(&payload).unwrap_or_default());
+    tracing::info!(
+        "Inviting Echo bot -> POST {} (msg_id={})",
+        add_url,
+        echo_bot_msg_id
+    );
+    tracing::debug!(
+        "Echo bot invite payload: {}",
+        serde_json::to_string_pretty(&payload).unwrap_or_default()
+    );
 
     let resp = http
         .post(&add_url)
@@ -883,7 +893,11 @@ pub async fn invite_echo_bot(
     let status = resp.status();
     let body = resp.text().await.unwrap_or_default();
 
-    tracing::info!("Echo bot invite response: {} ({} bytes)", status, body.len());
+    tracing::info!(
+        "Echo bot invite response: {} ({} bytes)",
+        status,
+        body.len()
+    );
     tracing::debug!("Echo bot invite response body: {}", body);
 
     if !status.is_success() {
@@ -993,7 +1007,10 @@ pub async fn create_1to1_call(
         }
     });
 
-    tracing::info!("1:1 call: POST {} (single-shot epconv with SDP)", epconv_url);
+    tracing::info!(
+        "1:1 call: POST {} (single-shot epconv with SDP)",
+        epconv_url
+    );
 
     let resp = http
         .post(epconv_url)
@@ -1139,8 +1156,16 @@ pub async fn invite_user(
     // Fresh message-id for deduplication
     let invite_msg_id = uuid::Uuid::new_v4().to_string();
 
-    tracing::info!("Inviting user {} -> POST {} (msg_id={})", callee_mri, add_url, invite_msg_id);
-    tracing::debug!("User invite payload: {}", serde_json::to_string_pretty(&payload).unwrap_or_default());
+    tracing::info!(
+        "Inviting user {} -> POST {} (msg_id={})",
+        callee_mri,
+        add_url,
+        invite_msg_id
+    );
+    tracing::debug!(
+        "User invite payload: {}",
+        serde_json::to_string_pretty(&payload).unwrap_or_default()
+    );
 
     let resp = http
         .post(&add_url)

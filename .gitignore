@@ -18,3 +18,4 @@ Thumbs.db
 # Local configuration (tokens are stored in ~/.config/teams-cli/)
 .env
 *.local
+tmp/

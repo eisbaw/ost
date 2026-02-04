@@ -36,6 +36,10 @@ hmac = "0.12"
 # CLI
 clap = { version = "4", features = ["derive"] }
 
+# TUI (Ratatui)
+ratatui = "0.29"
+crossterm = "0.28"
+
 # Error handling
 anyhow = "1"
 thiserror = "1"

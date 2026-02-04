@@ -254,8 +254,8 @@ pub fn create_context(
 ///
 /// Returns the SRTP packet: RTP header || encrypted payload || auth tag (10 bytes).
 pub fn protect(ctx: &mut SrtpContext, rtp_packet: &[u8]) -> Result<Vec<u8>> {
-    let header_len = rtp::full_header_len(rtp_packet)
-        .context("RTP packet too short for SRTP protection")?;
+    let header_len =
+        rtp::full_header_len(rtp_packet).context("RTP packet too short for SRTP protection")?;
 
     let header = &rtp_packet[..header_len];
     let payload = &rtp_packet[header_len..];

@@ -17,9 +17,15 @@ struct RawI420<'a> {
 }
 
 impl<'a> YUVSource for RawI420<'a> {
-    fn width(&self) -> i32 { self.width as i32 }
-    fn height(&self) -> i32 { self.height as i32 }
-    fn y(&self) -> &[u8] { &self.data[..self.width * self.height] }
+    fn width(&self) -> i32 {
+        self.width as i32
+    }
+    fn height(&self) -> i32 {
+        self.height as i32
+    }
+    fn y(&self) -> &[u8] {
+        &self.data[..self.width * self.height]
+    }
     fn u(&self) -> &[u8] {
         let y_size = self.width * self.height;
         let uv_size = (self.width / 2) * (self.height / 2);
@@ -30,9 +36,15 @@ impl<'a> YUVSource for RawI420<'a> {
         let uv_size = (self.width / 2) * (self.height / 2);
         &self.data[y_size + uv_size..y_size + uv_size * 2]
     }
-    fn y_stride(&self) -> i32 { self.width as i32 }
-    fn u_stride(&self) -> i32 { (self.width / 2) as i32 }
-    fn v_stride(&self) -> i32 { (self.width / 2) as i32 }
+    fn y_stride(&self) -> i32 {
+        self.width as i32
+    }
+    fn u_stride(&self) -> i32 {
+        (self.width / 2) as i32
+    }
+    fn v_stride(&self) -> i32 {
+        (self.width / 2) as i32
+    }
 }
 
 /// Decoded YUV frame ready for display.
@@ -87,7 +99,10 @@ impl H264Encoder {
             height: self.height as usize,
         };
 
-        let bitstream = self.encoder.encode(&yuv).context("openh264 encode failed")?;
+        let bitstream = self
+            .encoder
+            .encode(&yuv)
+            .context("openh264 encode failed")?;
 
         // Extract NAL units from the encoded bitstream
         let mut nals = Vec::new();

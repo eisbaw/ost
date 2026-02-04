@@ -61,11 +61,7 @@ impl TrouterSocket {
                     if let Some(req_id) = extract_trouter_request_id(&text) {
                         let resp = format!("3:::{{\"id\":{},\"status\":200}}", req_id);
                         tracing::debug!("Trouter response: {}", resp);
-                        if let Err(e) = self
-                            .stream
-                            .send(Message::Text(resp))
-                            .await
-                        {
+                        if let Err(e) = self.stream.send(Message::Text(resp)).await {
                             tracing::warn!("Failed to send Trouter response: {:#}", e);
                         }
                     }

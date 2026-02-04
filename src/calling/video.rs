@@ -47,14 +47,12 @@ const FU_END_BIT: u8 = 0x40;
 
 /// Stream Layout SEI UUID: {139FB1A9-446A-4DEC-8CBF-65B1E12D2CFD}
 const STREAM_LAYOUT_UUID: [u8; 16] = [
-    0x13, 0x9F, 0xB1, 0xA9, 0x44, 0x6A, 0x4D, 0xEC,
-    0x8C, 0xBF, 0x65, 0xB1, 0xE1, 0x2D, 0x2C, 0xFD,
+    0x13, 0x9F, 0xB1, 0xA9, 0x44, 0x6A, 0x4D, 0xEC, 0x8C, 0xBF, 0x65, 0xB1, 0xE1, 0x2D, 0x2C, 0xFD,
 ];
 
 /// Bitstream Info SEI UUID: {05FBC6B9-5A80-40E5-A22A-AB4020267E26}
 const BITSTREAM_INFO_UUID: [u8; 16] = [
-    0x05, 0xFB, 0xC6, 0xB9, 0x5A, 0x80, 0x40, 0xE5,
-    0xA2, 0x2A, 0xAB, 0x40, 0x20, 0x26, 0x7E, 0x26,
+    0x05, 0xFB, 0xC6, 0xB9, 0x5A, 0x80, 0x40, 0xE5, 0xA2, 0x2A, 0xAB, 0x40, 0x20, 0x26, 0x7E, 0x26,
 ];
 
 /// Video stream configuration for PACSI generation.
@@ -65,7 +63,7 @@ pub struct SvcConfig {
     pub display_width: u16,
     pub display_height: u16,
     pub bitrate: u32,
-    pub fps_idx: u8,       // 0=7.5, 1=12.5, 2=15, 3=25, 4=30
+    pub fps_idx: u8, // 0=7.5, 1=12.5, 2=15, 3=25, 4=30
     pub constrained_baseline: bool,
 }
 
@@ -77,7 +75,7 @@ impl Default for SvcConfig {
             display_width: 320,
             display_height: 240,
             bitrate: 256000,
-            fps_idx: 2,  // 15 fps
+            fps_idx: 2, // 15 fps
             constrained_baseline: true,
         }
     }
@@ -112,8 +110,8 @@ fn build_stream_layout_sei(cfg: &SvcConfig) -> Vec<u8> {
     let payload_size: u8 = 16 + 8 + 1 + 1 + 16; // 42
 
     let mut sei = Vec::with_capacity(2 + payload_size as usize);
-    sei.push(5u8);           // payloadType = 5 (User Data Unregistered)
-    sei.push(payload_size);  // payloadSize
+    sei.push(5u8); // payloadType = 5 (User Data Unregistered)
+    sei.push(payload_size); // payloadSize
     sei.extend_from_slice(&STREAM_LAYOUT_UUID);
     // Layer Presence Bitmask: 8 bytes. LPB0 bit 0 = PRID 0 present
     sei.push(0x01); // LPB0: bit 0 set (PRID=0 present)
@@ -138,8 +136,8 @@ fn build_bitstream_info_sei(ref_frm_cnt: u8, num_nal_units: u8) -> Vec<u8> {
     let payload_size: u8 = 18; // UUID(16) + ref_frm_cnt(1) + num_of_nal_unit(1)
 
     let mut sei = Vec::with_capacity(2 + payload_size as usize);
-    sei.push(5u8);           // payloadType = 5
-    sei.push(payload_size);  // payloadSize
+    sei.push(5u8); // payloadType = 5
+    sei.push(payload_size); // payloadSize
     sei.extend_from_slice(&BITSTREAM_INFO_UUID);
     sei.push(ref_frm_cnt);
     sei.push(num_nal_units);
@@ -155,8 +153,8 @@ fn build_bitstream_info_sei(ref_frm_cnt: u8, num_nal_units: u8) -> Vec<u8> {
 fn svc_extension_bytes(is_idr: bool) -> [u8; 3] {
     [
         0x80 | if is_idr { 0x40 } else { 0x00 }, // R=1, I=idr_flag, PRID=0
-        0x80,                                      // N=1, DID=0, QID=0
-        0x07,                                      // TID=0, U=0, D=0, O=1, RR=3
+        0x80,                                    // N=1, DID=0, QID=0
+        0x07,                                    // TID=0, U=0, D=0, O=1, RR=3
     ]
 }
 
@@ -258,7 +256,9 @@ impl VideoPacketizer {
         let mut packets = Vec::new();
 
         // Count NAL units and detect IDR for PACSI
-        let has_idr = nal_units.iter().any(|n| !n.is_empty() && (n[0] & 0x1F) == NAL_TYPE_IDR);
+        let has_idr = nal_units
+            .iter()
+            .any(|n| !n.is_empty() && (n[0] & 0x1F) == NAL_TYPE_IDR);
 
         // Count non-empty NAL units for bitstream info (empty NALs are skipped).
         let num_nal_units = nal_units.iter().filter(|n| !n.is_empty()).count().min(255) as u8;
@@ -296,7 +296,9 @@ impl VideoPacketizer {
 
         // Increment ref_frm_cnt for reference frames (NRI != 0 on any NAL)
         // All IDR frames and most P-frames are reference frames.
-        let is_reference = nal_units.iter().any(|n| !n.is_empty() && (n[0] & 0x60) != 0);
+        let is_reference = nal_units
+            .iter()
+            .any(|n| !n.is_empty() && (n[0] & 0x60) != 0);
         if is_reference {
             self.ref_frm_cnt = self.ref_frm_cnt.wrapping_add(1);
         }
@@ -568,7 +570,10 @@ mod tests {
         let packets = p.packetize_frame(&[nal]);
 
         // Should have: PACSI + prefix + FU-A fragments
-        assert!(packets.len() > 3, "should have PACSI + prefix + multiple fragments");
+        assert!(
+            packets.len() > 3,
+            "should have PACSI + prefix + multiple fragments"
+        );
 
         // First packet: PACSI
         assert_eq!(packets[0][12] & 0x1F, NAL_TYPE_PACSI);
@@ -670,7 +675,8 @@ mod tests {
         // First frame: PACSI (seq 0) + SPS (seq 1) -> 2 packets
         // Second frame: PACSI (seq 2) + SPS (seq 3) -> 2 packets
         let seq_first = u16::from_be_bytes([pkts1[0][2], pkts1[0][3]]);
-        let seq_last_frame1 = u16::from_be_bytes([pkts1.last().unwrap()[2], pkts1.last().unwrap()[3]]);
+        let seq_last_frame1 =
+            u16::from_be_bytes([pkts1.last().unwrap()[2], pkts1.last().unwrap()[3]]);
         let seq_first_frame2 = u16::from_be_bytes([pkts2[0][2], pkts2[0][3]]);
         assert_eq!(seq_first_frame2, seq_last_frame1 + 1);
         assert_eq!(seq_first, 0);
@@ -725,7 +731,7 @@ mod tests {
         assert_eq!(pacsi[bi_offset + 1], 18); // payloadSize=18
         assert_eq!(&pacsi[bi_offset + 2..bi_offset + 18], &BITSTREAM_INFO_UUID);
         assert_eq!(pacsi[bi_offset + 18], 42); // ref_frm_cnt
-        assert_eq!(pacsi[bi_offset + 19], 3);  // num_of_nal_unit
+        assert_eq!(pacsi[bi_offset + 19], 3); // num_of_nal_unit
     }
 
     #[test]

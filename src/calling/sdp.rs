@@ -636,7 +636,10 @@ pub fn generate_av_sdp_offer(p: &AvSdpParams) -> AvSdpResult {
 
     // Audio m-line
     sdp.push_str(&format!("m=audio {} RTP/SAVP 0\r\n", p.audio_port));
-    sdp.push_str(&format!("a=x-ssrc-range:{}-{}\r\n", p.audio_ssrc, p.audio_ssrc));
+    sdp.push_str(&format!(
+        "a=x-ssrc-range:{}-{}\r\n",
+        p.audio_ssrc, p.audio_ssrc
+    ));
     sdp.push_str("a=rtcp-fb:* x-message app send:dsh recv:dsh\r\n");
     sdp.push_str("a=rtcp-rsize\r\n");
     sdp.push_str("a=mid:0\r\n");
@@ -664,7 +667,10 @@ pub fn generate_av_sdp_offer(p: &AvSdpParams) -> AvSdpResult {
     sdp.push_str("\r\n");
 
     // Video m-line — X-H264UC (Teams proprietary H.264 SVC variant)
-    sdp.push_str(&format!("m=video {} RTP/SAVP 122 121 123\r\n", p.video_port));
+    sdp.push_str(&format!(
+        "m=video {} RTP/SAVP 122 121 123\r\n",
+        p.video_port
+    ));
     sdp.push_str("a=mid:1\r\n");
     sdp.push_str("a=rtpmap:122 X-H264UC/90000\r\n");
     sdp.push_str("a=fmtp:122 packetization-mode=1;mst-mode=NI-TC\r\n");
@@ -675,7 +681,8 @@ pub fn generate_av_sdp_offer(p: &AvSdpParams) -> AvSdpResult {
     sdp.push_str(&format!(
         "a=x-ssrc-range:{}-{}\r\n",
         p.video_ssrc_base,
-        p.video_ssrc_base.saturating_add(super::video::VIDEO_SSRC_RANGE_SIZE - 1)
+        p.video_ssrc_base
+            .saturating_add(super::video::VIDEO_SSRC_RANGE_SIZE - 1)
     ));
     sdp.push_str("a=x-caps:121 263:320:240:15.0:250000:1;4359:176:144:15.0:100000:1\r\n");
     sdp.push_str("a=sendrecv\r\n");
@@ -834,13 +841,22 @@ a=rtpmap:8 PCMA/8000\r\n";
 
         // Session-level attributes
         assert!(sdp.contains("b=CT:99980"), "missing b=CT:99980");
-        assert!(sdp.contains("a=x-mediabw:main-video send=12000;recv=12000"), "missing mediabw");
+        assert!(
+            sdp.contains("a=x-mediabw:main-video send=12000;recv=12000"),
+            "missing mediabw"
+        );
 
         // Audio attributes
         assert!(sdp.contains("a=rtpmap:0 PCMU/8000"), "missing PCMU rtpmap");
         assert!(sdp.contains("a=ptime:20"), "missing ptime");
-        assert!(sdp.contains("a=x-ssrc-range:5555-5555"), "missing audio x-ssrc-range");
-        assert!(sdp.contains("a=rtcp-fb:* x-message app send:dsh recv:dsh"), "missing audio rtcp-fb");
+        assert!(
+            sdp.contains("a=x-ssrc-range:5555-5555"),
+            "missing audio x-ssrc-range"
+        );
+        assert!(
+            sdp.contains("a=rtcp-fb:* x-message app send:dsh recv:dsh"),
+            "missing audio rtcp-fb"
+        );
 
         // Video attributes — X-H264UC
         assert!(
@@ -855,10 +871,7 @@ a=rtpmap:8 PCMA/8000\r\n";
             sdp.contains("a=x-ssrc-range:1000-1099"),
             "missing video x-ssrc-range"
         );
-        assert!(
-            sdp.contains("a=x-caps:121"),
-            "missing x-caps for PT 121"
-        );
+        assert!(sdp.contains("a=x-caps:121"), "missing x-caps for PT 121");
 
         // MID attributes
         let audio_idx = sdp.find("m=audio").unwrap();

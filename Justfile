@@ -105,6 +105,12 @@ cam-test: build-video
 call-echo: build-audio
     ./target/debug/teams-cli call-test --echo --duration 20
 
+# --- TUI ---
+
+# Launch the terminal UI
+tui: build
+    ./target/debug/teams-cli tui
+
 # Place A/V call to Echo bot with camera and display (20s)
 call-echo-video: build-full
     ./target/debug/teams-cli call-test --echo --camera --display --duration 20

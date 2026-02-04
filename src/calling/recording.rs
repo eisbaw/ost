@@ -69,7 +69,10 @@ fn recording_features() -> serde_json::Value {
 }
 
 /// Step 1: Add the recorder bot as a call participant.
-pub async fn add_recorder_bot(http: &reqwest::Client, params: &RecordingParams<'_>) -> Result<String> {
+pub async fn add_recorder_bot(
+    http: &reqwest::Client,
+    params: &RecordingParams<'_>,
+) -> Result<String> {
     let bot_participant_id = uuid::Uuid::new_v4().to_string();
 
     // Trouter callback URLs for add-participant success/failure notifications
@@ -122,7 +125,11 @@ pub async fn add_recorder_bot(http: &reqwest::Client, params: &RecordingParams<'
     // message-id causes "cached-response" with an empty body.
     let recorder_message_id = uuid::Uuid::new_v4().to_string();
 
-    tracing::info!("Adding recorder bot -> POST {} (msg_id={})", params.add_participant_url, recorder_message_id);
+    tracing::info!(
+        "Adding recorder bot -> POST {} (msg_id={})",
+        params.add_participant_url,
+        recorder_message_id
+    );
     tracing::debug!(
         "Recorder bot payload: {}",
         serde_json::to_string_pretty(&payload).unwrap_or_default()
@@ -149,9 +156,16 @@ pub async fn add_recorder_bot(http: &reqwest::Client, params: &RecordingParams<'
     let body = resp.text().await.unwrap_or_default();
 
     for (k, v) in resp_headers.iter() {
-        tracing::debug!("addParticipant resp header: {}: {}", k, v.to_str().unwrap_or("(binary)"));
+        tracing::debug!(
+            "addParticipant resp header: {}: {}",
+            k,
+            v.to_str().unwrap_or("(binary)")
+        );
     }
-    if resp_headers.get("x-microsoft-skype-cached-response").is_some() {
+    if resp_headers
+        .get("x-microsoft-skype-cached-response")
+        .is_some()
+    {
         tracing::warn!("Server returned cached response — message-id may have been reused");
     }
 
@@ -164,7 +178,10 @@ pub async fn add_recorder_bot(http: &reqwest::Client, params: &RecordingParams<'
     }
 
     tracing::info!("Recorder bot added ({}): {} bytes", status, body.len());
-    tracing::debug!("Recorder bot response (first 2000): {}", &body[..body.len().min(2000)]);
+    tracing::debug!(
+        "Recorder bot response (first 2000): {}",
+        &body[..body.len().min(2000)]
+    );
     // Dump full response for protocol analysis
     if let Ok(()) = std::fs::write("/tmp/add_recorder_response.json", &body) {
         tracing::info!("Full add-recorder response saved to /tmp/add_recorder_response.json");
@@ -178,10 +195,7 @@ async fn start_transcription_at(
     params: &RecordingParams<'_>,
     recorder_base: &str,
 ) -> Result<()> {
-    let url = format!(
-        "{}/v2/oncommand/{}",
-        recorder_base, params.conversation_id
-    );
+    let url = format!("{}/v2/oncommand/{}", recorder_base, params.conversation_id);
 
     let payload = serde_json::json!({
         "timestamp": Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
@@ -227,10 +241,7 @@ async fn start_recording_at(
     params: &RecordingParams<'_>,
     recorder_base: &str,
 ) -> Result<()> {
-    let url = format!(
-        "{}/v2/oncommand/{}",
-        recorder_base, params.conversation_id
-    );
+    let url = format!("{}/v2/oncommand/{}", recorder_base, params.conversation_id);
 
     let correlation_id = uuid::Uuid::new_v4().to_string();
     let now = Utc::now();
@@ -318,7 +329,10 @@ pub async fn start_call_recording(
         }
         None => {
             let derived = derive_add_participant_url_for_bot(conversation_controller);
-            tracing::info!("Derived addParticipant URL (no link in response): {}", derived);
+            tracing::info!(
+                "Derived addParticipant URL (no link in response): {}",
+                derived
+            );
             derived
         }
     };
@@ -371,8 +385,8 @@ pub async fn start_call_recording(
                 thread_id,
                 chain_id,
                 message_id,
-                caller_oid: "",   // not needed for acknowledgement
-                tenant_id: "",    // not needed for acknowledgement
+                caller_oid: "", // not needed for acknowledgement
+                tenant_id: "",  // not needed for acknowledgement
             };
             wait_for_recorder_info(ws, Duration::from_secs(30), http, &conv_params).await
         }
@@ -380,7 +394,11 @@ pub async fn start_call_recording(
 
     let (recorder_base, recorder_conv_id) = match recorder_info {
         Some((base, cid)) => {
-            tracing::info!("Recorder service discovered: base={}, conv_id={}", base, cid);
+            tracing::info!(
+                "Recorder service discovered: base={}, conv_id={}",
+                base,
+                cid
+            );
             (base, cid)
         }
         None => {
@@ -433,10 +451,7 @@ pub struct RecordingSession {
 }
 
 /// Stop recording and transcription for an active session.
-pub async fn stop_call_recording(
-    http: &reqwest::Client,
-    session: &RecordingSession,
-) -> Result<()> {
+pub async fn stop_call_recording(http: &reqwest::Client, session: &RecordingSession) -> Result<()> {
     let url = format!(
         "{}/v2/oncommand/{}",
         session.recorder_base, session.conversation_id
@@ -455,7 +470,10 @@ pub async fn stop_call_recording(
     tracing::info!("Stopping recording -> POST {}", url);
     let resp = http
         .post(&url)
-        .header("Authorization", format!("Bearer {}", session.recorder_token))
+        .header(
+            "Authorization",
+            format!("Bearer {}", session.recorder_token),
+        )
         .header("x-skypetoken", &session.skype_token)
         .header("x-microsoft-skype-chain-id", &session.chain_id)
         .header("Content-Type", "application/json")
@@ -465,7 +483,11 @@ pub async fn stop_call_recording(
         .context("Failed to POST stop recording")?;
     let status = resp.status();
     let body = resp.text().await.unwrap_or_default();
-    tracing::info!("Stop recording response ({}): {}", status, &body[..body.len().min(200)]);
+    tracing::info!(
+        "Stop recording response ({}): {}",
+        status,
+        &body[..body.len().min(200)]
+    );
 
     // Stop transcription
     let payload = serde_json::json!({
@@ -481,7 +503,10 @@ pub async fn stop_call_recording(
     tracing::info!("Stopping transcription -> POST {}", url);
     let resp = http
         .post(&url)
-        .header("Authorization", format!("Bearer {}", session.recorder_token))
+        .header(
+            "Authorization",
+            format!("Bearer {}", session.recorder_token),
+        )
         .header("x-skypetoken", &session.skype_token)
         .header("x-microsoft-skype-chain-id", &session.chain_id)
         .header("Content-Type", "application/json")
@@ -491,7 +516,11 @@ pub async fn stop_call_recording(
         .context("Failed to POST stop transcription")?;
     let status = resp.status();
     let body = resp.text().await.unwrap_or_default();
-    tracing::info!("Stop transcription response ({}): {}", status, &body[..body.len().min(200)]);
+    tracing::info!(
+        "Stop transcription response ({}): {}",
+        status,
+        &body[..body.len().min(200)]
+    );
 
     Ok(())
 }
@@ -761,7 +790,10 @@ fn derive_add_participant_url_for_bot(conversation_controller: &str) -> String {
         let (path, query) = conversation_controller.split_at(idx);
         format!("{}/addParticipant{}", path.trim_end_matches('/'), query)
     } else {
-        format!("{}/addParticipant", conversation_controller.trim_end_matches('/'))
+        format!(
+            "{}/addParticipant",
+            conversation_controller.trim_end_matches('/')
+        )
     }
 }
 
@@ -780,5 +812,4 @@ mod tests {
         let url2 = "https://amer03-1.conv.skype.com/conv/abc123/something";
         assert_eq!(extract_conversation_id(url2), Some("abc123".to_string()));
     }
-
 }
