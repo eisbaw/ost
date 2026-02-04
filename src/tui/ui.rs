@@ -10,6 +10,7 @@ use ratatui::{
 };
 
 use super::app::{App, Pane};
+use super::compose;
 use super::messages;
 use super::sidebar;
 
@@ -49,12 +50,28 @@ pub fn render(frame: &mut Frame, app: &App) {
         app.active_pane == Pane::Sidebar,
     );
 
+    // Split content area: messages (fill) + compose box (4 lines)
+    let [messages_area, compose_area] = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(compose::COMPOSE_HEIGHT),
+    ])
+    .areas(content_area);
+
     // Render messages pane
     messages::render(
-        content_area,
+        messages_area,
         frame.buffer_mut(),
         &app.messages,
         app.active_pane == Pane::Messages,
+    );
+
+    // Render compose box
+    compose::render(
+        compose_area,
+        frame,
+        &app.compose,
+        &app.channel_name,
+        app.active_pane == Pane::Compose,
     );
 
     // Render status bar
