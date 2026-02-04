@@ -388,7 +388,8 @@ fn render_item(buf: &mut Buffer, ctx: &RowCtx, item: &SidebarItem, state: &Sideb
             } else {
                 "\u{25B6}"
             };
-            let label = format!(" {} {}", indicator, team.name);
+            let cursor = if ctx.selected { "\u{25BA}" } else { " " };
+            let label = format!("{}{} {}", cursor, indicator, team.name);
 
             let style = if ctx.selected {
                 Style::default()
@@ -404,7 +405,8 @@ fn render_item(buf: &mut Buffer, ctx: &RowCtx, item: &SidebarItem, state: &Sideb
 
         SidebarItem::Channel(ti, ci) => {
             let channel = &state.teams[*ti].channels[*ci];
-            let label = format!("   # {}", channel.name);
+            let cursor = if ctx.selected { "\u{25BA}" } else { " " };
+            let label = format!("  {}# {}", cursor, channel.name);
             let badge = if channel.unread > 0 {
                 format!("{}", channel.unread)
             } else {
@@ -433,7 +435,8 @@ fn render_item(buf: &mut Buffer, ctx: &RowCtx, item: &SidebarItem, state: &Sideb
         SidebarItem::Chat(ci) => {
             let chat = &state.chats[*ci];
             let icon = if chat.is_group { "+" } else { "*" };
-            let label = format!(" {} {}", icon, chat.name);
+            let cursor = if ctx.selected { "\u{25BA}" } else { " " };
+            let label = format!("{}{} {}", cursor, icon, chat.name);
             let badge = if chat.unread > 0 {
                 format!("{}", chat.unread)
             } else if chat.online {

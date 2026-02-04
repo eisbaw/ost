@@ -91,6 +91,15 @@ impl App {
         };
     }
 
+    /// Cycle to the previous pane (reverse of next_pane).
+    fn prev_pane(&mut self) {
+        self.active_pane = match self.active_pane {
+            Pane::Sidebar => Pane::Compose,
+            Pane::Messages => Pane::Sidebar,
+            Pane::Compose => Pane::Messages,
+        };
+    }
+
     /// Handle input events
     pub fn handle_events(&mut self) -> Result<()> {
         if event::poll(Duration::from_millis(FRAME_DURATION_MS))? {
@@ -126,6 +135,25 @@ impl App {
             }
             KeyCode::Tab => {
                 self.next_pane();
+            }
+            KeyCode::BackTab => {
+                self.prev_pane();
+            }
+            KeyCode::Right => {
+                self.next_pane();
+            }
+            KeyCode::Left => {
+                self.prev_pane();
+            }
+            // Direct pane jump with number keys
+            KeyCode::Char('1') => {
+                self.active_pane = Pane::Sidebar;
+            }
+            KeyCode::Char('2') => {
+                self.active_pane = Pane::Messages;
+            }
+            KeyCode::Char('3') => {
+                self.active_pane = Pane::Compose;
             }
             // Sidebar-specific keys (only when sidebar is focused)
             KeyCode::Up | KeyCode::Char('k') if self.active_pane == Pane::Sidebar => {
@@ -176,6 +204,10 @@ impl App {
             // Tab always cycles pane focus.
             (KeyCode::Tab, _) => {
                 self.next_pane();
+            }
+            // Shift+Tab cycles backward.
+            (KeyCode::BackTab, _) => {
+                self.prev_pane();
             }
             // Esc leaves compose and goes to Messages pane.
             (KeyCode::Esc, _) => {
