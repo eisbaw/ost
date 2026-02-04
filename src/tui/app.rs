@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use super::compose::ComposeState;
 use super::messages::MessagesState;
+use super::search::SearchState;
 use super::sidebar::SidebarState;
 use super::ui;
 
@@ -57,6 +58,8 @@ pub struct App {
     pub compose: ComposeState,
     /// Whether the help popup is visible
     pub show_help: bool,
+    /// Global search overlay state
+    pub search: SearchState,
 }
 
 impl Default for App {
@@ -77,6 +80,7 @@ impl Default for App {
             messages: MessagesState::default(),
             compose: ComposeState::default(),
             show_help: false,
+            search: SearchState::default(),
         }
     }
 }
@@ -108,6 +112,20 @@ impl App {
                     // When help popup is visible, any key closes it.
                     if self.show_help {
                         self.show_help = false;
+                        return Ok(());
+                    }
+
+                    // When search overlay is active, route all keys to search handler.
+                    if self.search.active {
+                        self.handle_search_key(key_event);
+                        return Ok(());
+                    }
+
+                    // Ctrl+K activates global search from any mode.
+                    if key_event.code == KeyCode::Char('k')
+                        && key_event.modifiers.contains(KeyModifiers::CONTROL)
+                    {
+                        self.search.activate();
                         return Ok(());
                     }
 
@@ -257,6 +275,127 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// Handle key events when the search overlay is active.
+    ///
+    /// In search mode:
+    /// - Esc: close search
+    /// - Up/Down: navigate results
+    /// - Enter: select result and navigate to it
+    /// - Typing: update query and refilter
+    /// - Backspace/Delete: edit query
+    /// - Left/Right: move cursor within query
+    /// - Home/End: move cursor to start/end
+    fn handle_search_key(&mut self, key_event: crossterm::event::KeyEvent) {
+        let code = key_event.code;
+        let modifiers = key_event.modifiers;
+
+        match (code, modifiers) {
+            // Esc closes the search overlay.
+            (KeyCode::Esc, _) => {
+                self.search.deactivate();
+            }
+            // Up arrow navigates results.
+            (KeyCode::Up, _) => {
+                self.search.select_previous();
+            }
+            // Down arrow navigates results.
+            (KeyCode::Down, _) => {
+                self.search.select_next();
+            }
+            // Enter selects the current result.
+            (KeyCode::Enter, _) => {
+                self.apply_search_selection();
+            }
+            // Backspace deletes character before cursor.
+            (KeyCode::Backspace, _) => {
+                self.search.backspace();
+                self.search.update_results(&self.sidebar, &self.messages);
+            }
+            // Delete removes character at cursor.
+            (KeyCode::Delete, _) => {
+                self.search.delete_at_cursor();
+                self.search.update_results(&self.sidebar, &self.messages);
+            }
+            // Left/Right move cursor.
+            (KeyCode::Left, _) => {
+                self.search.move_left();
+            }
+            (KeyCode::Right, _) => {
+                self.search.move_right();
+            }
+            (KeyCode::Home, _) => {
+                self.search.move_home();
+            }
+            (KeyCode::End, _) => {
+                self.search.move_end();
+            }
+            // Regular character input.
+            (KeyCode::Char(c), m) => {
+                // Only insert if no modifiers or just shift (for uppercase).
+                if m.is_empty() || m == KeyModifiers::SHIFT {
+                    self.search.insert_char(c);
+                    self.search.update_results(&self.sidebar, &self.messages);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Apply the currently selected search result: navigate to the matching item.
+    fn apply_search_selection(&mut self) {
+        use super::search::SearchResultKind;
+
+        let result = match self.search.selected_result() {
+            Some(r) => r.kind.clone(),
+            None => {
+                self.search.deactivate();
+                return;
+            }
+        };
+
+        match result {
+            SearchResultKind::Channel(team_idx, channel_idx) => {
+                // Expand the team if collapsed, then select the channel in sidebar.
+                if !self.sidebar.teams[team_idx].expanded {
+                    self.sidebar.teams[team_idx].expanded = true;
+                }
+                // Find the flat index of this channel in the sidebar.
+                let items = self.sidebar.flat_items();
+                for (idx, item) in items.iter().enumerate() {
+                    if let super::sidebar::SidebarItem::Channel(ti, ci) = item {
+                        if *ti == team_idx && *ci == channel_idx {
+                            self.sidebar.selected = idx;
+                            break;
+                        }
+                    }
+                }
+                self.active_pane = Pane::Sidebar;
+            }
+            SearchResultKind::Chat(chat_idx) => {
+                // Select the chat in the sidebar.
+                let items = self.sidebar.flat_items();
+                for (idx, item) in items.iter().enumerate() {
+                    if let super::sidebar::SidebarItem::Chat(ci) = item {
+                        if *ci == chat_idx {
+                            self.sidebar.selected = idx;
+                            break;
+                        }
+                    }
+                }
+                self.active_pane = Pane::Sidebar;
+            }
+            SearchResultKind::Message(msg_idx) => {
+                // Select the message in the messages pane.
+                if msg_idx < self.messages.messages.len() {
+                    self.messages.selected = msg_idx;
+                }
+                self.active_pane = Pane::Messages;
+            }
+        }
+
+        self.search.deactivate();
     }
 
     /// Render the UI

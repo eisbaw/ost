@@ -13,6 +13,7 @@ use super::app::{App, Pane};
 use super::compose;
 use super::help;
 use super::messages;
+use super::search;
 use super::sidebar;
 
 /// Returns status indicator symbol and color based on online state
@@ -77,6 +78,11 @@ pub fn render(frame: &mut Frame, app: &App) {
 
     // Render status bar
     render_status(status_area, frame.buffer_mut(), app);
+
+    // Render search overlay (on top of main content, below help popup)
+    if app.search.active {
+        search::render_search_overlay(frame, &app.search);
+    }
 
     // Render help popup overlay (on top of everything else)
     if app.show_help {
@@ -150,6 +156,8 @@ fn render_status(area: Rect, buf: &mut Buffer, app: &App) {
 
     let help_hint = Span::styled("?: help", Style::default().fg(Color::Gray));
 
+    let search_hint = Span::styled("C-k: search", Style::default().fg(Color::Gray));
+
     let status_line = Line::from(vec![
         connection,
         Span::styled(" | ", sep_style),
@@ -160,6 +168,8 @@ fn render_status(area: Rect, buf: &mut Buffer, app: &App) {
         pane,
         Span::styled(" | ", sep_style),
         help_hint,
+        Span::styled(" | ", sep_style),
+        search_hint,
     ]);
 
     let status = Paragraph::new(status_line).style(Style::default().bg(Color::DarkGray));

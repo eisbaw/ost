@@ -6,6 +6,7 @@ mod app;
 mod compose;
 mod help;
 mod messages;
+mod search;
 mod sidebar;
 mod ui;
 
