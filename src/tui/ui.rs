@@ -9,7 +9,8 @@ use ratatui::{
     Frame,
 };
 
-use super::app::App;
+use super::app::{App, Pane};
+use super::sidebar;
 
 /// Returns status indicator symbol and color based on online state
 fn status_indicator(is_online: bool) -> (&'static str, Color) {
@@ -35,8 +36,20 @@ pub fn render(frame: &mut Frame, app: &App) {
     // Render header bar
     render_header(header_area, frame.buffer_mut(), app);
 
+    // Split main area: sidebar (22 cols) + content
+    let [sidebar_area, content_area] =
+        Layout::horizontal([Constraint::Length(22), Constraint::Fill(1)]).areas(main_area);
+
+    // Render sidebar
+    sidebar::render(
+        sidebar_area,
+        frame.buffer_mut(),
+        &app.sidebar,
+        app.active_pane == Pane::Sidebar,
+    );
+
     // Render main content area (placeholder for now)
-    render_main(main_area, frame.buffer_mut());
+    render_main(content_area, frame.buffer_mut());
 
     // Render status bar
     render_status(status_area, frame.buffer_mut(), app);

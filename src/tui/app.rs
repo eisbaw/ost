@@ -6,6 +6,7 @@ use ratatui::DefaultTerminal;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::time::Duration;
 
+use super::sidebar::SidebarState;
 use super::ui;
 
 /// Target frame rate for UI updates (~30 fps)
@@ -46,6 +47,8 @@ pub struct App {
     pub connection_state: String,
     /// Active pane
     pub active_pane: Pane,
+    /// Sidebar state (teams/channels/chats + navigation)
+    pub sidebar: SidebarState,
 }
 
 impl Default for App {
@@ -58,18 +61,49 @@ impl Default for App {
             member_count: 12,
             connection_state: "Connected".to_string(),
             active_pane: Pane::default(),
+            // Start selection on the first selectable item (skip TeamsHeader at index 0)
+            sidebar: SidebarState {
+                selected: 1,
+                ..SidebarState::default()
+            },
         }
     }
 }
 
 impl App {
+    /// Cycle to the next pane.
+    fn next_pane(&mut self) {
+        self.active_pane = match self.active_pane {
+            Pane::Sidebar => Pane::Messages,
+            Pane::Messages => Pane::Compose,
+            Pane::Compose => Pane::Sidebar,
+        };
+    }
+
     /// Handle input events
     pub fn handle_events(&mut self) -> Result<()> {
         if event::poll(Duration::from_millis(FRAME_DURATION_MS))? {
             match event::read()? {
                 Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
-                    if let KeyCode::Char('q') = key_event.code {
-                        self.should_exit = true;
+                    match key_event.code {
+                        KeyCode::Char('q') => {
+                            self.should_exit = true;
+                        }
+                        KeyCode::Tab => {
+                            self.next_pane();
+                        }
+                        // Sidebar-specific keys (only when sidebar is focused)
+                        KeyCode::Up | KeyCode::Char('k') if self.active_pane == Pane::Sidebar => {
+                            self.sidebar.move_up();
+                        }
+                        KeyCode::Down | KeyCode::Char('j') if self.active_pane == Pane::Sidebar => {
+                            self.sidebar.move_down();
+                        }
+                        KeyCode::Enter if self.active_pane == Pane::Sidebar => {
+                            self.sidebar.toggle_expand();
+                            self.sidebar.clamp_selection();
+                        }
+                        _ => {}
                     }
                 }
                 Event::Resize(_, _) => {
