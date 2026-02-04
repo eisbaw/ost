@@ -11,6 +11,7 @@ use ratatui::{
 
 use super::app::{App, Pane};
 use super::compose;
+use super::help;
 use super::messages;
 use super::sidebar;
 
@@ -76,6 +77,11 @@ pub fn render(frame: &mut Frame, app: &App) {
 
     // Render status bar
     render_status(status_area, frame.buffer_mut(), app);
+
+    // Render help popup overlay (on top of everything else)
+    if app.show_help {
+        help::render_help_popup(frame);
+    }
 }
 
 /// Render the header bar

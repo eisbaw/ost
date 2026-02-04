@@ -55,6 +55,8 @@ pub struct App {
     pub messages: MessagesState,
     /// Compose box state
     pub compose: ComposeState,
+    /// Whether the help popup is visible
+    pub show_help: bool,
 }
 
 impl Default for App {
@@ -74,6 +76,7 @@ impl Default for App {
             },
             messages: MessagesState::default(),
             compose: ComposeState::default(),
+            show_help: false,
         }
     }
 }
@@ -93,6 +96,12 @@ impl App {
         if event::poll(Duration::from_millis(FRAME_DURATION_MS))? {
             match event::read()? {
                 Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
+                    // When help popup is visible, any key closes it.
+                    if self.show_help {
+                        self.show_help = false;
+                        return Ok(());
+                    }
+
                     // When the compose pane is focused, most keys are text input.
                     if self.active_pane == Pane::Compose {
                         self.handle_compose_key(key_event);
@@ -138,6 +147,10 @@ impl App {
             }
             KeyCode::Enter if self.active_pane == Pane::Messages => {
                 self.messages.toggle_thread();
+            }
+            // Help popup toggle (available from any non-compose pane)
+            KeyCode::Char('?') => {
+                self.show_help = !self.show_help;
             }
             _ => {}
         }

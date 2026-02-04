@@ -4,6 +4,7 @@
 
 mod app;
 mod compose;
+mod help;
 mod messages;
 mod sidebar;
 mod ui;
