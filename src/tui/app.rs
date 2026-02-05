@@ -7,6 +7,8 @@ use tokio_stream::StreamExt;
 
 use super::backend::{Backend, BackendCommand, BackendResponse};
 use super::compose::ComposeState;
+use super::debug_log::DebugLogState;
+use super::log_capture::LogBuffer;
 use super::messages::MessagesState;
 use super::search::SearchState;
 use super::sidebar::SidebarState;
@@ -64,10 +66,13 @@ pub struct App {
     pub status_message: Option<String>,
     /// Whether the status message is an error.
     pub status_is_error: bool,
+    /// Debug log pane state.
+    pub debug_log: DebugLogState,
 }
 
-impl Default for App {
-    fn default() -> Self {
+impl App {
+    /// Create a new App with the given log buffer for debug log capture.
+    pub fn new(log_buffer: LogBuffer) -> Self {
         Self {
             should_exit: false,
             is_online: false,
@@ -84,6 +89,7 @@ impl Default for App {
             current_chat_id: None,
             status_message: None,
             status_is_error: false,
+            debug_log: DebugLogState::new(log_buffer),
         }
     }
 }
@@ -135,6 +141,29 @@ impl App {
             {
                 self.search.activate();
                 return;
+            }
+
+            // Ctrl+D toggles debug log pane from any mode.
+            if key_event.code == KeyCode::Char('d')
+                && key_event.modifiers.contains(KeyModifiers::CONTROL)
+            {
+                self.debug_log.toggle();
+                return;
+            }
+
+            // When debug log is visible, handle scroll keys.
+            if self.debug_log.visible {
+                match key_event.code {
+                    KeyCode::PageUp => {
+                        self.debug_log.scroll_up(10);
+                        return;
+                    }
+                    KeyCode::PageDown => {
+                        self.debug_log.scroll_down(10);
+                        return;
+                    }
+                    _ => {}
+                }
             }
 
             // When the compose pane is focused, most keys are text input.
@@ -533,7 +562,8 @@ impl App {
 /// Run the TUI application with terminal restore on exit.
 ///
 /// Sets up a panic hook so the terminal is always restored even on panic.
-pub async fn run() -> Result<()> {
+/// Requires a LogBuffer for capturing tracing output into the debug log pane.
+pub async fn run(log_buffer: LogBuffer) -> Result<()> {
     // Install a panic hook that restores the terminal before printing the panic.
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -542,13 +572,13 @@ pub async fn run() -> Result<()> {
     }));
 
     let mut terminal = ratatui::init();
-    let res = run_app(&mut terminal).await;
+    let res = run_app(&mut terminal, log_buffer).await;
     ratatui::restore();
     res
 }
 
-async fn run_app(terminal: &mut DefaultTerminal) -> Result<()> {
-    let mut app = App::default();
+async fn run_app(terminal: &mut DefaultTerminal, log_buffer: LogBuffer) -> Result<()> {
+    let mut app = App::new(log_buffer);
     let mut backend = Backend::start();
     let mut events = EventStream::new();
 
@@ -559,6 +589,8 @@ async fn run_app(terminal: &mut DefaultTerminal) -> Result<()> {
     backend.send(BackendCommand::LoadPresence);
 
     while !app.should_exit {
+        // Drain log buffer before rendering to keep it from growing unbounded.
+        app.debug_log.refresh();
         terminal.draw(|frame| app.render(frame))?;
 
         tokio::select! {

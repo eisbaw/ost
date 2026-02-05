@@ -174,6 +174,10 @@ const MISC: Category = Category {
             desc: "New channel post",
         },
         Shortcut {
+            key: "Ctrl+D",
+            desc: "Toggle debug log",
+        },
+        Shortcut {
             key: "Ctrl+,",
             desc: "Settings",
         },

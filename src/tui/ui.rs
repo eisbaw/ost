@@ -11,10 +11,15 @@ use ratatui::{
 
 use super::app::{App, Pane};
 use super::compose;
+use super::debug_log;
 use super::help;
 use super::messages;
 use super::search;
 use super::sidebar;
+
+/// Percentage of main area height allocated to content when debug log is visible.
+/// The remainder goes to the debug log pane.
+const DEBUG_LOG_CONTENT_PERCENT: u16 = 70;
 
 /// Returns status indicator symbol and color based on online state
 fn status_indicator(is_online: bool) -> (&'static str, Color) {
@@ -40,9 +45,21 @@ pub fn render(frame: &mut Frame, app: &App) {
     // Render header bar
     render_header(header_area, frame.buffer_mut(), app);
 
-    // Split main area: sidebar (22 cols) + content
+    // If debug log is visible, split main area vertically: content + debug log
+    let (content_main_area, debug_log_area) = if app.debug_log.visible {
+        let [content, debug] = Layout::vertical([
+            Constraint::Percentage(DEBUG_LOG_CONTENT_PERCENT),
+            Constraint::Percentage(100 - DEBUG_LOG_CONTENT_PERCENT),
+        ])
+        .areas(main_area);
+        (content, Some(debug))
+    } else {
+        (main_area, None)
+    };
+
+    // Split content_main_area: sidebar (22 cols) + content
     let [sidebar_area, content_area] =
-        Layout::horizontal([Constraint::Length(22), Constraint::Fill(1)]).areas(main_area);
+        Layout::horizontal([Constraint::Length(22), Constraint::Fill(1)]).areas(content_main_area);
 
     // Render sidebar
     sidebar::render(
@@ -75,6 +92,11 @@ pub fn render(frame: &mut Frame, app: &App) {
         &app.channel_name,
         app.active_pane == Pane::Compose,
     );
+
+    // Render debug log pane if visible
+    if let Some(debug_area) = debug_log_area {
+        debug_log::render(debug_area, frame.buffer_mut(), &app.debug_log);
+    }
 
     // Render status bar
     render_status(status_area, frame.buffer_mut(), app);
