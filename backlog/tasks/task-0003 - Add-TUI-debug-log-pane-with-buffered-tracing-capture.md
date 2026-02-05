@@ -1,10 +1,11 @@
 ---
 id: TASK-0003
 title: Add TUI debug log pane with buffered tracing capture
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@claude'
 created_date: '2026-02-05 22:32'
-updated_date: '2026-02-05 22:34'
+updated_date: '2026-02-05 22:59'
 labels:
   - tui
   - logging
@@ -26,15 +27,15 @@ Tracing output (info/debug/warn from token refresh, API calls) writes to stderr 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 TUI mode redirects tracing output to an in-memory ring buffer instead of stderr
-- [ ] #2 CLI commands still log to stderr as before
-- [ ] #3 New log_capture module with LogBuffer (Arc<Mutex<VecDeque<String>>>) and MakeWriter impl
-- [ ] #4 New debug_log module with DebugLogState, refresh/toggle/scroll, and level-colored rendering
-- [ ] #5 Debug log pane toggles with Ctrl+D as a bottom split pane (30% height, not modal overlay)
-- [ ] #6 Log buffer is drained every event loop iteration regardless of pane visibility
-- [ ] #7 main.rs conditionally initializes tracing subscriber (buffer for TUI, stderr for CLI)
-- [ ] #8 Ctrl+D shortcut added to help popup
-- [ ] #9 cargo build succeeds, cargo test passes, no regressions
+- [x] #1 TUI mode redirects tracing output to an in-memory ring buffer instead of stderr
+- [x] #2 CLI commands still log to stderr as before
+- [x] #3 New log_capture module with LogBuffer (Arc<Mutex<VecDeque<String>>>) and MakeWriter impl
+- [x] #4 New debug_log module with DebugLogState, refresh/toggle/scroll, and level-colored rendering
+- [x] #5 Debug log pane toggles with Ctrl+D as a bottom split pane (30% height, not modal overlay)
+- [x] #6 Log buffer is drained every event loop iteration regardless of pane visibility
+- [x] #7 main.rs conditionally initializes tracing subscriber (buffer for TUI, stderr for CLI)
+- [x] #8 Ctrl+D shortcut added to help popup
+- [x] #9 cargo build succeeds, cargo test passes, no regressions
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -134,3 +135,9 @@ tracing-subscriber already has `fmt` + `env-filter` features. `MakeWriter` trait
 5. Manual: `cargo run -- -v tui` — debug-level API call logs appear in pane
 6. Manual: CLI commands (`cargo run -- whoami` etc.) still log to stderr as before
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Redirect tracing output to an in-memory ring buffer in TUI mode so log lines no longer corrupt the ratatui alternate screen. CLI commands continue logging to stderr unchanged.\n\nNew modules:\n- `src/tui/log_capture.rs`: LogBuffer (Arc<Mutex<VecDeque<String>>>) with MakeWriter impl for tracing-subscriber. Ring buffer capacity 500, poison-recovery on mutex.\n- `src/tui/debug_log.rs`: DebugLogState with accumulated line history (capped at 1000), toggle/scroll, level-based line coloring (ERROR=red, WARN=yellow, INFO=green, DEBUG=gray).\n\nModified:\n- `src/main.rs`: Conditional tracing init — TUI branch uses `.with_ansi(false).with_writer(log_buffer)`, CLI branch uses stderr fmt layer.\n- `src/tui/app.rs`: App::new(LogBuffer) replaces App::default(), Ctrl+D toggle, PgUp/PgDn scroll, buffer drained every event loop iteration.\n- `src/tui/ui.rs`: Conditional 70/30 vertical split when debug log visible.\n- `src/tui/help.rs`: Ctrl+D entry in MISC category.\n\nTests: 91 pass (8 new tests in log_capture + debug_log modules)."
+<!-- SECTION:FINAL_SUMMARY:END -->
