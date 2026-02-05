@@ -443,7 +443,7 @@ fn render_item(buf: &mut Buffer, ctx: &RowCtx, item: &SidebarItem, state: &Sideb
 
         SidebarItem::Chat(ci) => {
             let chat = &state.chats[*ci];
-            let icon = if chat.is_group { "+" } else { "*" };
+            let icon = if chat.is_group { "\u{1F465}" } else { "\u{1F464}" };
             let cursor = if ctx.selected { "\u{25BA}" } else { " " };
             let label = format!("{}{} {}", cursor, icon, chat.name);
             let badge = if chat.unread > 0 {
@@ -483,21 +483,30 @@ fn render_row(
     }
 
     // Truncate left text if needed, leaving room for badge + 1 space
-    let badge_len = badge.len();
-    let max_left = if badge_len > 0 {
-        width.saturating_sub(badge_len + 1)
+    let badge_w = unicode_width::UnicodeWidthStr::width(badge);
+    let max_left = if badge_w > 0 {
+        width.saturating_sub(badge_w + 1)
     } else {
         width
     };
 
-    let left_truncated: String = left.chars().take(max_left).collect();
-    let left_len = left_truncated.chars().count();
+    // Truncate by display width, not char count
+    let mut left_truncated = String::new();
+    let mut left_w = 0;
+    for ch in left.chars() {
+        let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if left_w + cw > max_left {
+            break;
+        }
+        left_truncated.push(ch);
+        left_w += cw;
+    }
 
     // Padding between left text and badge
-    let pad = if badge_len > 0 {
-        width.saturating_sub(left_len + badge_len)
+    let pad = if badge_w > 0 {
+        width.saturating_sub(left_w + badge_w)
     } else {
-        width.saturating_sub(left_len)
+        width.saturating_sub(left_w)
     };
 
     // Build the line

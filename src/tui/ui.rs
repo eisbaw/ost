@@ -114,8 +114,9 @@ pub fn render(frame: &mut Frame, app: &App) {
 
 /// Render the header bar
 fn render_header(area: Rect, buf: &mut Buffer, app: &App) {
+    let title_text = " OST Client ";
     let title = Span::styled(
-        " OST Client",
+        title_text,
         Style::default()
             .fg(Color::White)
             .add_modifier(Modifier::BOLD),
@@ -124,8 +125,13 @@ fn render_header(area: Rect, buf: &mut Buffer, app: &App) {
     let help_indicator = Span::styled(" [?] Help ", Style::default().fg(Color::Gray));
 
     let (status_symbol, status_color) = status_indicator(app.is_online);
+    let status_text = if app.is_online {
+        "online".to_string()
+    } else {
+        app.connection_state.clone()
+    };
     let online_status = Span::styled(
-        format!(" {} online ", status_symbol),
+        format!(" {} {} ", status_symbol, status_text),
         Style::default().fg(status_color),
     );
 
@@ -135,8 +141,8 @@ fn render_header(area: Rect, buf: &mut Buffer, app: &App) {
     );
 
     // Calculate spacing to right-align the right-side elements
-    let left_width = " OST Client".len();
-    let right_content = format!("[?] Help  {} online  {} ", status_symbol, app.user_name);
+    let left_width = title_text.len();
+    let right_content = format!("[?] Help  {} {}  {} ", status_symbol, status_text, app.user_name);
     let right_width = right_content.len();
     let padding_width = area.width.saturating_sub((left_width + right_width) as u16) as usize;
     let padding = Span::raw(" ".repeat(padding_width));

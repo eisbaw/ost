@@ -200,9 +200,9 @@ fn render_toolbar(area: Rect, buf: &mut Buffer, focused: bool) {
     let w = area.width as usize;
 
     // Left side: formatting icons
-    let left_items = " B  I  U  ~  link  clip  :)";
-    // Right side: send button
-    let right_items = ">";
+    let left_items = " \u{1D401}  \u{1D43C}  U  ~  \u{1F517}  \u{1F4CE}  \u{1F60A}";
+    // Right side: camera, mic, send
+    let right_items = "\u{1F4F7}  \u{1F3A4}  \u{27A4}";
 
     let left_style = if focused {
         Style::default().fg(Color::White)
@@ -218,9 +218,9 @@ fn render_toolbar(area: Rect, buf: &mut Buffer, focused: bool) {
         Style::default().fg(Color::DarkGray)
     };
 
-    let left_len = left_items.len();
-    let right_len = right_items.len() + 1; // include trailing space
-    let padding = w.saturating_sub(left_len + right_len);
+    let left_w = unicode_width::UnicodeWidthStr::width(left_items);
+    let right_w = unicode_width::UnicodeWidthStr::width(right_items) + 1; // include trailing space
+    let padding = w.saturating_sub(left_w + right_w);
 
     let line = Line::from(vec![
         Span::styled(left_items, left_style),

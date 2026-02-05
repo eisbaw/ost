@@ -1,5 +1,6 @@
 //! Messages pane: displays channel messages with reactions, replies, and attachments.
 
+use chrono::{Datelike, Local, NaiveDate, NaiveDateTime, Timelike, Weekday};
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -9,6 +10,9 @@ use ratatui::{
 };
 
 use crate::api;
+
+/// Default header shown when no channel is selected.
+const DEFAULT_HEADER: &str = "Select a channel or chat";
 
 // ---------------------------------------------------------------------------
 // Data model
@@ -68,7 +72,7 @@ pub struct MessagesState {
 impl Default for MessagesState {
     fn default() -> Self {
         Self {
-            channel_header: "Select a channel or chat".to_string(),
+            channel_header: DEFAULT_HEADER.to_string(),
             messages: Vec::new(),
             expanded_threads: Vec::new(),
             scroll_offset: 0,
@@ -186,10 +190,12 @@ pub fn render(area: Rect, buf: &mut Buffer, state: &MessagesState, focused: bool
     // Show empty state.
     if state.messages.is_empty() {
         let empty_area = Rect::new(messages_area.x, messages_area.y, messages_area.width, 1);
-        let line = Line::from(Span::styled(
-            " Select a channel or chat to view messages",
-            Style::default().fg(Color::DarkGray),
-        ));
+        let text = if state.channel_header == DEFAULT_HEADER {
+            " Select a channel or chat to view messages"
+        } else {
+            " No messages yet"
+        };
+        let line = Line::from(Span::styled(text, Style::default().fg(Color::DarkGray)));
         Paragraph::new(line).render(empty_area, buf);
         return;
     }
@@ -255,6 +261,7 @@ fn build_message_lines(
     state: &MessagesState,
     width: usize,
 ) -> (Vec<Line<'static>>, Vec<(usize, usize)>) {
+    let today = Local::now().naive_local().date();
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut ranges: Vec<(usize, usize)> = Vec::new();
 
@@ -268,12 +275,12 @@ fn build_message_lines(
             .unwrap_or(false);
 
         // Render main message card.
-        render_message_card(&mut lines, msg, width, is_selected, false, 0);
+        render_message_card(&mut lines, msg, width, is_selected, false, 0, msg_idx, today);
 
         // Render thread replies if expanded.
         if thread_expanded && !msg.replies.is_empty() {
             for reply in &msg.replies {
-                render_message_card(&mut lines, reply, width, false, true, 4);
+                render_message_card(&mut lines, reply, width, false, true, 4, msg_idx, today);
             }
         } else if msg.reply_count > 0 && !thread_expanded {
             // Show collapsed thread indicator.
@@ -297,6 +304,9 @@ fn build_message_lines(
 }
 
 /// Render a single message card (either top-level or reply) into the line buffer.
+///
+/// Uses colored backgrounds instead of ASCII borders. Even/odd `msg_idx`
+/// alternates between two subtle background shades for visual separation.
 fn render_message_card(
     lines: &mut Vec<Line<'static>>,
     msg: &Message,
@@ -304,154 +314,208 @@ fn render_message_card(
     is_selected: bool,
     is_reply: bool,
     indent: usize,
+    msg_idx: usize,
+    today: NaiveDate,
 ) {
     let indent_str: String = " ".repeat(indent);
     let reply_prefix = if is_reply { " -> " } else { "" };
 
-    // Card width: available width minus indent and margins.
-    let card_inner_width =
-        width
-            .saturating_sub(indent)
-            .saturating_sub(if is_reply { 6 } else { 2 });
+    // Usable content width after indent, reply prefix, and small margins.
+    let prefix_len = indent + reply_prefix.len();
+    let content_width = width.saturating_sub(prefix_len).saturating_sub(2); // 1 char margin each side
 
-    if card_inner_width < 10 {
-        // Too narrow to render anything useful.
+    if content_width < 10 {
         return;
     }
 
-    let border_style = if is_selected {
-        Style::default().fg(Color::Yellow)
+    // Background color: alternate shades; highlight selected.
+    let bg = if is_selected {
+        Color::Rgb(55, 55, 70)
     } else if is_reply {
-        Style::default().fg(Color::DarkGray)
+        Color::Rgb(30, 30, 38)
+    } else if msg_idx % 2 == 0 {
+        Color::Rgb(35, 35, 45)
     } else {
-        Style::default().fg(Color::Gray)
+        Color::Rgb(42, 42, 52)
     };
+
+    let selection_indicator = if is_selected && !is_reply { "> " } else { "  " };
 
     let sender_style = Style::default()
         .fg(Color::White)
+        .bg(bg)
         .add_modifier(Modifier::BOLD);
 
-    let timestamp_style = Style::default().fg(Color::DarkGray);
+    let timestamp_style = Style::default().fg(Color::DarkGray).bg(bg);
+    let text_style = Style::default().fg(Color::White).bg(bg);
+    let bg_style = Style::default().bg(bg);
 
-    // Top border of card.
-    let top_border = format!(
-        "{}{}+-{}-+",
-        indent_str,
-        reply_prefix,
-        "-".repeat(card_inner_width.saturating_sub(2))
-    );
-    lines.push(Line::from(Span::styled(top_border, border_style)));
+    let formatted_ts = format_timestamp(&msg.timestamp, today);
 
-    // Sender line: "| sender              timestamp |"
-    let sender_ts_pad = card_inner_width
+    // Helper: build a full-width line with background color.
+    // Pads the right side so the background color fills the entire row.
+    let make_bg_line = |spans: Vec<Span<'static>>, used_chars: usize| -> Line<'static> {
+        let pad = width.saturating_sub(used_chars);
+        let mut all_spans = spans;
+        all_spans.push(Span::styled(" ".repeat(pad), bg_style));
+        Line::from(all_spans)
+    };
+
+    // Sender + timestamp line.
+    let prefix = format!("{}{}{}", indent_str, reply_prefix, selection_indicator);
+    let ts_gap = content_width
         .saturating_sub(msg.sender.len())
-        .saturating_sub(msg.timestamp.len())
-        .saturating_sub(2);
-    let sender_line_prefix = format!("{}{}", indent_str, if is_reply { "    " } else { "" });
-    lines.push(Line::from(vec![
-        Span::raw(sender_line_prefix.clone()),
-        Span::styled("| ".to_string(), border_style),
-        Span::styled(format!(" {}", msg.sender), sender_style),
-        Span::raw(" ".repeat(sender_ts_pad)),
-        Span::styled(format!("{} ", msg.timestamp), timestamp_style),
-        Span::styled("|".to_string(), border_style),
-    ]));
-
-    // Blank line inside card.
-    let blank_inner = format!(
-        "{}{}| {} |",
-        indent_str,
-        if is_reply { "    " } else { "" },
-        " ".repeat(card_inner_width.saturating_sub(2))
-    );
-    lines.push(Line::from(Span::styled(blank_inner.clone(), border_style)));
+        .saturating_sub(formatted_ts.len());
+    let used = prefix.len() + msg.sender.len() + ts_gap + formatted_ts.len();
+    lines.push(make_bg_line(
+        vec![
+            Span::styled(prefix.clone(), bg_style),
+            Span::styled(msg.sender.clone(), sender_style),
+            Span::styled(" ".repeat(ts_gap), bg_style),
+            Span::styled(formatted_ts, timestamp_style),
+        ],
+        used,
+    ));
 
     // Content lines (word-wrapped).
-    let content_width = card_inner_width.saturating_sub(2);
-    let content_lines = wrap_text(&msg.content, content_width);
+    let wrap_width = content_width;
+    let content_lines = wrap_text(&msg.content, wrap_width);
+    let content_prefix = format!(
+        "{}{}",
+        indent_str,
+        if is_reply {
+            "        " // align with reply content after " -> > "
+        } else {
+            "    " // align with sender name after selection indicator "  "
+        }
+    );
     for cl in &content_lines {
-        let pad = content_width.saturating_sub(cl.len());
-        lines.push(Line::from(vec![
-            Span::raw(format!(
-                "{}{}",
-                indent_str,
-                if is_reply { "    " } else { "" }
-            )),
-            Span::styled("| ".to_string(), border_style),
-            Span::raw(format!("{}{}", cl, " ".repeat(pad))),
-            Span::styled(" |".to_string(), border_style),
-        ]));
+        let used = content_prefix.len() + cl.len();
+        lines.push(make_bg_line(
+            vec![
+                Span::styled(content_prefix.clone(), bg_style),
+                Span::styled(cl.clone(), text_style),
+            ],
+            used,
+        ));
     }
 
     // Attachments.
     for att in &msg.attachments {
-        // Blank line before attachment.
-        lines.push(Line::from(Span::styled(blank_inner.clone(), border_style)));
-
         let att_text = format!("[file] {}", att.name);
-        let att_pad = content_width.saturating_sub(att_text.len());
-        lines.push(Line::from(vec![
-            Span::raw(format!(
-                "{}{}",
-                indent_str,
-                if is_reply { "    " } else { "" }
-            )),
-            Span::styled("| ".to_string(), border_style),
-            Span::styled(
-                att_text,
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM),
-            ),
-            Span::raw(" ".repeat(att_pad)),
-            Span::styled(" |".to_string(), border_style),
-        ]));
+        let used = content_prefix.len() + att_text.len();
+        lines.push(make_bg_line(
+            vec![
+                Span::styled(content_prefix.clone(), bg_style),
+                Span::styled(
+                    att_text,
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .bg(bg)
+                        .add_modifier(Modifier::DIM),
+                ),
+            ],
+            used,
+        ));
     }
 
     // Reactions and reply count.
     if !msg.reactions.is_empty() || msg.reply_count > 0 {
-        // Blank line before reactions.
-        lines.push(Line::from(Span::styled(blank_inner.clone(), border_style)));
-
-        let mut reaction_spans: Vec<Span<'static>> = Vec::new();
-        reaction_spans.push(Span::raw(format!(
-            "{}{}",
-            indent_str,
-            if is_reply { "    " } else { "" }
-        )));
-        reaction_spans.push(Span::styled("| ".to_string(), border_style));
-
-        let mut reaction_text_len: usize = 0;
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        spans.push(Span::styled(content_prefix.clone(), bg_style));
+        let mut used = content_prefix.len();
 
         for (i, r) in msg.reactions.iter().enumerate() {
             let r_text = format!("{} {}", r.label, r.count);
-            reaction_text_len += r_text.len();
-            reaction_spans.push(Span::styled(r_text, Style::default().fg(Color::Yellow)));
+            used += r_text.len();
+            spans.push(Span::styled(
+                r_text,
+                Style::default().fg(Color::Yellow).bg(bg),
+            ));
             if i + 1 < msg.reactions.len() || msg.reply_count > 0 {
-                reaction_spans.push(Span::raw("   "));
-                reaction_text_len += 3;
+                spans.push(Span::styled("   ", bg_style));
+                used += 3;
             }
         }
 
         if msg.reply_count > 0 {
             let reply_text = format!(">> {} replies", msg.reply_count);
-            reaction_text_len += reply_text.len();
-            reaction_spans.push(Span::styled(reply_text, Style::default().fg(Color::Cyan)));
+            used += reply_text.len();
+            spans.push(Span::styled(
+                reply_text,
+                Style::default().fg(Color::Cyan).bg(bg),
+            ));
         }
 
-        let reaction_pad = content_width.saturating_sub(reaction_text_len);
-        reaction_spans.push(Span::raw(" ".repeat(reaction_pad)));
-        reaction_spans.push(Span::styled(" |".to_string(), border_style));
-
-        lines.push(Line::from(reaction_spans));
+        lines.push(make_bg_line(spans, used));
     }
+}
 
-    // Bottom border.
-    let bottom_border = format!(
-        "{}{}+-{}-+",
-        indent_str,
-        if is_reply { "    " } else { "" },
-        "-".repeat(card_inner_width.saturating_sub(2))
-    );
-    lines.push(Line::from(Span::styled(bottom_border, border_style)));
+/// Format an ISO 8601 timestamp string into a human-readable form.
+///
+/// - Today: "14:34"
+/// - Within the last 7 days: "Mon 14:34"
+/// - Older: "Jan 29"
+///
+/// `today` should be precomputed once per render pass to avoid redundant
+/// syscalls and midnight-boundary inconsistencies.
+///
+/// Falls back to returning the original string if parsing fails.
+fn format_timestamp(raw: &str, today: NaiveDate) -> String {
+    let trimmed = raw.trim();
+    let is_utc = trimmed.ends_with('Z');
+    let stripped = trimmed.trim_end_matches('Z');
+
+    let parsed = NaiveDateTime::parse_from_str(stripped, "%Y-%m-%dT%H:%M:%S%.f")
+        .or_else(|_| NaiveDateTime::parse_from_str(stripped, "%Y-%m-%dT%H:%M:%S"));
+    let naive = match parsed {
+        Ok(dt) => dt,
+        Err(_) => return raw.to_string(),
+    };
+
+    // Convert UTC timestamps to local time.
+    let local_dt = if is_utc {
+        naive.and_utc().with_timezone(&Local).naive_local()
+    } else {
+        naive
+    };
+
+    let ts_date = local_dt.date();
+
+    if ts_date == today {
+        format!("{:02}:{:02}", local_dt.hour(), local_dt.minute())
+    } else {
+        let days_ago = (today - ts_date).num_days();
+        if days_ago > 0 && days_ago < 7 {
+            let weekday = match ts_date.weekday() {
+                Weekday::Mon => "Mon",
+                Weekday::Tue => "Tue",
+                Weekday::Wed => "Wed",
+                Weekday::Thu => "Thu",
+                Weekday::Fri => "Fri",
+                Weekday::Sat => "Sat",
+                Weekday::Sun => "Sun",
+            };
+            format!("{} {:02}:{:02}", weekday, local_dt.hour(), local_dt.minute())
+        } else {
+            let month = match ts_date.month() {
+                1 => "Jan",
+                2 => "Feb",
+                3 => "Mar",
+                4 => "Apr",
+                5 => "May",
+                6 => "Jun",
+                7 => "Jul",
+                8 => "Aug",
+                9 => "Sep",
+                10 => "Oct",
+                11 => "Nov",
+                12 => "Dec",
+                _ => "???",
+            };
+            format!("{} {}", month, ts_date.day())
+        }
+    }
 }
 
 /// Simple word-wrapping: split content by newlines first, then wrap long lines.

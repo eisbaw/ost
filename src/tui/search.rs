@@ -325,8 +325,17 @@ fn render_search_bar(area: Rect, frame: &mut Frame, state: &SearchState) {
 
     if state.query.is_empty() {
         // Render placeholder text.
-        let placeholder = " Search channels, chats, messages...";
-        let truncated: String = placeholder.chars().take(w).collect();
+        let placeholder = " \u{1F50D} Search channels, chats, messages...";
+        let mut truncated = String::new();
+        let mut tw = 0;
+        for ch in placeholder.chars() {
+            let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+            if tw + cw > w {
+                break;
+            }
+            truncated.push(ch);
+            tw += cw;
+        }
         let line = Line::from(Span::styled(
             truncated,
             Style::default().fg(Color::DarkGray),
@@ -433,8 +442,8 @@ fn render_result_row(area: Rect, buf: &mut Buffer, result: &SearchResult, select
 
     let icon = match &result.kind {
         SearchResultKind::Channel(_, _) => "#",
-        SearchResultKind::Chat(_) => "*",
-        SearchResultKind::Message(_) => ">",
+        SearchResultKind::Chat(_) => "\u{1F464}",
+        SearchResultKind::Message(_) => "\u{1F4AC}",
     };
 
     let icon_style = Style::default()
@@ -457,21 +466,30 @@ fn render_result_row(area: Rect, buf: &mut Buffer, result: &SearchResult, select
     let prefix = format!(" {} ", icon);
     let separator = " - ";
 
-    let prefix_len = prefix.len();
-    let sep_len = separator.len();
-    let label_len = result.label.len();
+    let prefix_w = unicode_width::UnicodeWidthStr::width(prefix.as_str());
+    let sep_w = unicode_width::UnicodeWidthStr::width(separator);
+    let label_w = unicode_width::UnicodeWidthStr::width(result.label.as_str());
 
     let max_context = w
-        .saturating_sub(prefix_len)
-        .saturating_sub(label_len)
-        .saturating_sub(sep_len);
-    let context_truncated: String = result.context.chars().take(max_context).collect();
+        .saturating_sub(prefix_w)
+        .saturating_sub(label_w)
+        .saturating_sub(sep_w);
+    let mut context_truncated = String::new();
+    let mut ctx_w = 0;
+    for ch in result.context.chars() {
+        let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if ctx_w + cw > max_context {
+            break;
+        }
+        context_truncated.push(ch);
+        ctx_w += cw;
+    }
 
     let pad_len = w
-        .saturating_sub(prefix_len)
-        .saturating_sub(label_len)
-        .saturating_sub(sep_len)
-        .saturating_sub(context_truncated.len());
+        .saturating_sub(prefix_w)
+        .saturating_sub(label_w)
+        .saturating_sub(sep_w)
+        .saturating_sub(ctx_w);
 
     let line = Line::from(vec![
         Span::styled(prefix, icon_style),
