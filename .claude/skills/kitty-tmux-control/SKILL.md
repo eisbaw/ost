@@ -1,18 +1,19 @@
 ---
-name: xterm-tmux-control
-description: Control graphical terminals via tmux for testing TUI applications. Use when you need to start an xterm window, run commands in it, capture screen output, or take rapid snapshots of terminal state. Useful for debugging TUI apps, observing startup sequences, or testing interactive programs.
+name: kitty-tmux-control
+description: Control graphical terminals via tmux for testing TUI applications. Use when you need to start a kitty window, run commands in it, capture screen output, or take rapid snapshots of terminal state. Useful for debugging TUI apps, observing startup sequences, or testing interactive programs.
 allowed-tools: Bash
 ---
 
-# XTerm + Tmux Control
+# Kitty + Tmux Control
 
 This skill enables control of graphical terminal windows through tmux, allowing you to run interactive programs and capture their output without direct TTY access.
 
-## Starting an XTerm with Tmux Session
+## Starting a Kitty Window with Tmux Session
 
 ```bash
-# Start xterm with a new tmux session (runs in background)
-xterm -e "tmux new-session -s SESSION_NAME" &
+# Start kitty with a new tmux session (runs in background)
+# Use -o for geometry: initial_window_width/height in cells (append 'c') or pixels
+kitty -o "initial_window_width=120c" -o "initial_window_height=40c" sh -c "tmux new-session -s SESSION_NAME" &
 ```
 
 Replace `SESSION_NAME` with a descriptive name (e.g., `gacia-test`, `app-debug`).
@@ -82,11 +83,11 @@ tmux send-keys -t SESSION_NAME "nix-shell --run 'your-command'" Enter
 ## Complete Workflow Example
 
 ```bash
-# 1. Start xterm with tmux
-xterm -e "tmux new-session -s myapp" &
+# 1. Start kitty with tmux
+kitty -o "initial_window_width=120c" -o "initial_window_height=40c" sh -c "tmux new-session -s myapp" &
 
 # 2. Wait for tmux to initialize
-sleep 1
+sleep 2
 
 # 3. Verify session exists
 tmux list-sessions
@@ -113,10 +114,10 @@ tmux kill-session -t myapp
 
 ## Troubleshooting
 
-**"session not found" error**: The xterm/tmux may not have started yet. Add `sleep 1` after starting xterm.
+**"session not found" error**: The kitty/tmux may not have started yet. Add `sleep 2` after starting kitty.
 
 **Empty capture output**: The pane may not have rendered yet. Try capturing after a short delay.
 
 **Command not in PATH**: The tmux session runs in a fresh shell. Use `nix-shell --run` or source appropriate environment files.
 
-**Capturing TUI panels**: TUI frameworks like Rich use ANSI escape codes. The captured text will show the rendered layout with box-drawing characters.
+**Capturing TUI panels**: TUI frameworks like ratatui use ANSI escape codes. The captured text will show the rendered layout with box-drawing characters.

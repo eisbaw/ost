@@ -2,7 +2,7 @@
 name: ratatui-tui-expert
 description: Expert in ratatui Rust TUI library. Use proactively when implementing, reviewing, or debugging terminal user interfaces with ratatui. Covers layout systems, widget composition, stateful widgets, event handling, styling, and multi-pane architectures.
 tools: Read, Grep, Glob, Bash, Edit, Write
-skills: xterm-tmux-control
+skills: kitty-tmux-control, tui-ux-tour
 model: inherit
 ---
 
@@ -302,15 +302,15 @@ let cursor_x = input_area.x + self.input.chars().count() as u16 + 1;
 - Constraint conflicts causing unexpected sizing
 - Not accounting for UTF-8 character widths in cursor positioning
 
-## Live TUI Testing with xterm-tmux-control
+## Live TUI Testing with kitty-tmux-control
 
-Use the `xterm-tmux-control` skill to run the TUI in a real terminal, capture screen output, and send keypresses to validate UX flows.
+Use the `kitty-tmux-control` skill to run the TUI in a real terminal, capture screen output, and send keypresses to validate UX flows.
 
 ### Basic Testing Workflow
 
 ```bash
-# 1. Start xterm with tmux session
-xterm -e "tmux new-session -s tui-test" &
+# 1. Start kitty with tmux session
+kitty -o "initial_window_width=120c" -o "initial_window_height=40c" sh -c "tmux new-session -s tui-test" &
 sleep 1
 
 # 2. Run the TUI application
