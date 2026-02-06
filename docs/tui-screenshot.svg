@@ -1,0 +1,332 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1116.0 670.0" width="1116" height="670">
+<style>
+  text { font-family: "JetBrains Mono", "Fira Code", "DejaVu Sans Mono", "Consolas", monospace; font-size: 13px; white-space: pre; }
+</style>
+<rect width="100%" height="100%" fill="#1a1b26" rx="8" ry="8"/>
+<circle cx="20" cy="10" r="5" fill="#ff5f57"/>
+<circle cx="40" cy="10" r="5" fill="#febc2e"/>
+<circle cx="60" cy="10" r="5" fill="#28c840"/>
+  <text y="28.0" xml:space="preserve">
+    <tspan x="12.0" fill="#9ece6a"> OST Client</tspan>
+    <tspan x="97.8" fill="#a9b1d6">                                                                                                        </tspan>
+    <tspan x="909.0" fill="#7dcfff">[?] Help</tspan>
+    <tspan x="971.4" fill="#9ece6a">  * online</tspan>
+    <tspan x="1049.4" fill="#c0caf5">  Riker</tspan>
+  </text>
+  <text y="45.0" xml:space="preserve">
+    <tspan x="12.0" fill="#3b4261">╔════════════════════╗</tspan>
+    <tspan x="183.6" fill="#3b4261">┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐</tspan>
+  </text>
+  <text y="62.0" xml:space="preserve">
+    <tspan x="12.0" fill="#3b4261">║</tspan>
+    <tspan x="19.8" fill="#c0caf5">&gt;&gt; TEAMS            </tspan>
+    <tspan x="175.8" fill="#3b4261">║</tspan>
+    <tspan x="183.6" fill="#3b4261">│</tspan>
+    <tspan x="191.4" fill="#7dcfff"> Off topic                                                                                                          </tspan>
+    <tspan x="1096.2" fill="#3b4261">│</tspan>
+  </text>
+  <text y="79.0" xml:space="preserve">
+    <tspan x="12.0" fill="#3b4261">║</tspan>
+    <tspan x="19.8" fill="#7dcfff"> ▼ Enterprise       </tspan>
+    <tspan x="175.8" fill="#3b4261">║</tspan>
+    <tspan x="183.6" fill="#3b4261">│</tspan>
+    <tspan x="191.4" fill="#bb9af7">  Seven of Nine</tspan>
+    <tspan x="308.4" fill="#a9b1d6">                                                                                             </tspan>
+    <tspan x="1033.8" fill="#e0af68">SD 54892</tspan>
+    <tspan x="1096.2" fill="#3b4261">│</tspan>
+  </text>
+  <text y="96.0" xml:space="preserve">
+    <tspan x="12.0" fill="#3b4261">║</tspan>
+    <tspan x="19.8" fill="#565f89">   # Bridge         </tspan>
+    <tspan x="175.8" fill="#3b4261">║</tspan>
+    <tspan x="183.6" fill="#3b4261">│</tspan>
+    <tspan x="191.4" fill="#c0caf5">    The sonic showers on Deck 9 are malfunctioning again.</tspan>
+    <tspan x="636.0" fill="#a9b1d6">                                                           </tspan>
+    <tspan x="1096.2" fill="#3b4261">│</tspan>
+  </text>
+  <text y="113.0" xml:space="preserve">
+    <tspan x="12.0" fill="#3b4261">║</tspan>
+    <tspan x="19.8" fill="#565f89">   # Engineering    </tspan>
+    <tspan x="175.8" fill="#3b4261">║</tspan>
+    <tspan x="183.6" fill="#3b4261">│</tspan>
+    <tspan x="191.4" fill="#c0caf5">    They emit frequencies 12% below optimal cleansing parameters.</tspan>
+    <tspan x="698.4" fill="#a9b1d6">                                                   </tspan>
+    <tspan x="1096.2" fill="#3b4261">│</tspan>
+  </text>
+  <text y="130.0" xml:space="preserve">
+    <tspan x="12.0" fill="#3b4261">║</tspan>
+    <tspan x="19.8" fill="#565f89">   # Ten-Forward    </tspan>
+    <tspan x="175.8" fill="#3b4261">║</tspan>
+    <tspan x="183.6" fill="#3b4261">│</tspan>
+    <tspan x="191.4" fill="#a9b1d6">                                                                                                                    </tspan>
+    <tspan x="1096.2" fill="#3b4261">│</tspan>
+  </text>
+  <text y="147.0" xml:space="preserve">
+    <tspan x="12.0" fill="#3b4261">║</tspan>
+    <tspan x="19.8" fill="#7dcfff"> ▼ Voyager          </tspan>
+    <tspan x="175.8" fill="#3b4261">║</tspan>
+    <tspan x="183.6" fill="#3b4261">│</tspan>
+    <tspan x="191.4" fill="#73daca">  T&#x27;Pol</tspan>
+    <tspan x="246.0" fill="#a9b1d6">                                                                                                     </tspan>
+    <tspan x="1033.8" fill="#e0af68">SD 54892</tspan>
+    <tspan x="1096.2" fill="#3b4261">│</tspan>
+  </text>
+  <text y="164.0" xml:space="preserve">
+    <tspan x="12.0" fill="#3b4261">║</tspan>
+    <tspan x="19.8" fill="#565f89">   # Astrometrics   </tspan>
+    <tspan x="175.8" fill="#3b4261">║</tspan>
+    <tspan x="183.6" fill="#3b4261">│</tspan>
+    <tspan x="191.4" fill="#c0caf5">    I have noticed the same anomaly on NX-01.</tspan>
+    <tspan x="542.4" fill="#a9b1d6">                                                                       </tspan>
+    <tspan x="1096.2" fill="#3b4261">│</tspan>
+  </text>
+  <text y="181.0" xml:space="preserve">
+    <tspan x="12.0" fill="#3b4261">║</tspan>
+    <tspan x="19.8" fill="#565f89">   # Mess-Hall      </tspan>
+    <tspan x="175.8" fill="#3b4261">║</tspan>
+    <tspan x="183.6" fill="#3b4261">│</tspan>
+    <tspan x="191.4" fill="#c0caf5">    The harmonic variance is... disagreeable.</tspan>
+    <tspan x="542.4" fill="#a9b1d6">                                                                       </tspan>
+    <tspan x="1096.2" fill="#3b4261">│</tspan>
+  </text>
+  <text y="198.0" xml:space="preserve">
+    <tspan x="12.0" fill="#3b4261">║</tspan>
+    <tspan x="19.8" fill="#7dcfff"> ▼ NX-01            </tspan>
+    <tspan x="175.8" fill="#3b4261">║</tspan>
+    <tspan x="183.6" fill="#3b4261">│</tspan>
+    <tspan x="191.4" fill="#a9b1d6">                                                                                                                    </tspan>
+    <tspan x="1096.2" fill="#3b4261">│</tspan>
+  </text>
+  <text y="215.0" xml:space="preserve">
+    <tspan x="12.0" fill="#3b4261">║</tspan>
+    <tspan x="19.8" fill="#565f89">   # Science-Lab    </tspan>
+    <tspan x="175.8" fill="#3b4261">║</tspan>
+    <tspan x="183.6" fill="#3b4261">│</tspan>
+    <tspan x="191.4" fill="#1a1b26">                             </tspan>
+    <tspan x="417.6" fill="#7aa2f7">  Riker</tspan>
+    <tspan x="472.2" fill="#a9b1d6">                                                                        </tspan>
+    <tspan x="1033.8" fill="#e0af68">SD 54892</tspan>
+    <tspan x="1096.2" fill="#3b4261">│</tspan>
+  </text>
+  <text y="232.0" xml:space="preserve">
+    <tspan x="12.0" fill="#3b4261">║</tspan>
+    <tspan x="19.8" fill="#565f89">   # Ready-Room     </tspan>
+    <tspan x="175.8" fill="#3b4261">║</tspan>
+    <tspan x="183.6" fill="#3b4261">│</tspan>
+    <tspan x="191.4" fill="#1a1b26">                             </tspan>
+    <tspan x="417.6" fill="#c0caf5">    Wait, you two are comparing sonic shower specs across ships?</tspan>
+    <tspan x="916.8" fill="#a9b1d6">                       </tspan>
+    <tspan x="1096.2" fill="#3b4261">│</tspan>
+  </text>
+  <text y="249.0" xml:space="preserve">
+    <tspan x="12.0" fill="#3b4261">║</tspan>
+    <tspan x="19.8" fill="#565f89"> -- CHATS ----------</tspan>
+    <tspan x="175.8" fill="#3b4261">║</tspan>
+    <tspan x="183.6" fill="#3b4261">│</tspan>
+    <tspan x="191.4" fill="#a9b1d6">                                                                                                                    </tspan>
+    <tspan x="1096.2" fill="#3b4261">│</tspan>
+  </text>
+  <text y="266.0" xml:space="preserve">
+    <tspan x="12.0" fill="#3b4261">║</tspan>
+    <tspan x="19.8" fill="#7dcfff">  ► Off topic       </tspan>
+    <tspan x="175.8" fill="#3b4261">║</tspan>
+    <tspan x="183.6" fill="#3b4261">│</tspan>
+    <tspan x="191.4" fill="#bb9af7">  Seven of Nine</tspan>
+    <tspan x="308.4" fill="#a9b1d6">                                                                                             </tspan>
+    <tspan x="1033.8" fill="#e0af68">SD 54892</tspan>
+    <tspan x="1096.2" fill="#3b4261">│</tspan>
+  </text>
+  <text y="283.0" xml:space="preserve">
+    <tspan x="12.0" fill="#3b4261">║</tspan>
+    <tspan x="19.8" fill="#73daca">   T&#x27;Pol            </tspan>
+    <tspan x="175.8" fill="#3b4261">║</tspan>
+    <tspan x="183.6" fill="#3b4261">│</tspan>
+    <tspan x="191.4" fill="#c0caf5">    Precision in personal hygiene is not trivial, Commander.</tspan>
+    <tspan x="659.4" fill="#a9b1d6">                                                        </tspan>
+    <tspan x="1096.2" fill="#3b4261">│</tspan>
+  </text>
+  <text y="300.0" xml:space="preserve">
+    <tspan x="12.0" fill="#3b4261">║</tspan>
+    <tspan x="19.8" fill="#bb9af7">   Seven of Nine    </tspan>
+    <tspan x="175.8" fill="#3b4261">║</tspan>
+    <tspan x="183.6" fill="#3b4261">│</tspan>
+    <tspan x="191.4" fill="#a9b1d6">                                                                                                                    </tspan>
+    <tspan x="1096.2" fill="#3b4261">│</tspan>
+  </text>
+  <text y="317.0" xml:space="preserve">
+    <tspan x="12.0" fill="#3b4261">║</tspan>
+    <tspan x="19.8" fill="#565f89">   Geordi La Forge  </tspan>
+    <tspan x="175.8" fill="#3b4261">║</tspan>
+    <tspan x="183.6" fill="#3b4261">│</tspan>
+    <tspan x="191.4" fill="#73daca">  T&#x27;Pol</tspan>
+    <tspan x="246.0" fill="#a9b1d6">                                                                                                     </tspan>
+    <tspan x="1033.8" fill="#e0af68">SD 54892</tspan>
+    <tspan x="1096.2" fill="#3b4261">│</tspan>
+  </text>
+  <text y="334.0" xml:space="preserve">
+    <tspan x="12.0" fill="#3b4261">║</tspan>
+    <tspan x="19.8" fill="#565f89">   Deanna Troi      </tspan>
+    <tspan x="175.8" fill="#3b4261">║</tspan>
+    <tspan x="183.6" fill="#3b4261">│</tspan>
+    <tspan x="191.4" fill="#c0caf5">    Vulcans require specific resonance frequencies. It is a matter of physiology.</tspan>
+    <tspan x="823.2" fill="#a9b1d6">                                   </tspan>
+    <tspan x="1096.2" fill="#3b4261">│</tspan>
+  </text>
+  <text y="351.0" xml:space="preserve">
+    <tspan x="12.0" fill="#3b4261">║</tspan>
+    <tspan x="19.8" fill="#565f89">   Worf             </tspan>
+    <tspan x="175.8" fill="#3b4261">║</tspan>
+    <tspan x="183.6" fill="#3b4261">│</tspan>
+    <tspan x="191.4" fill="#a9b1d6">                                                                                                                    </tspan>
+    <tspan x="1096.2" fill="#3b4261">│</tspan>
+  </text>
+  <text y="368.0" xml:space="preserve">
+    <tspan x="12.0" fill="#3b4261">║</tspan>
+    <tspan x="19.8" fill="#565f89">   B&#x27;Elanna Torres  </tspan>
+    <tspan x="175.8" fill="#3b4261">║</tspan>
+    <tspan x="183.6" fill="#3b4261">│</tspan>
+    <tspan x="191.4" fill="#1a1b26">                             </tspan>
+    <tspan x="417.6" fill="#7aa2f7">  Riker</tspan>
+    <tspan x="472.2" fill="#a9b1d6">                                                                        </tspan>
+    <tspan x="1033.8" fill="#e0af68">SD 54892</tspan>
+    <tspan x="1096.2" fill="#3b4261">│</tspan>
+  </text>
+  <text y="385.0" xml:space="preserve">
+    <tspan x="12.0" fill="#3b4261">║</tspan>
+    <tspan x="19.8" fill="#565f89">   Data             </tspan>
+    <tspan x="175.8" fill="#3b4261">║</tspan>
+    <tspan x="183.6" fill="#3b4261">│</tspan>
+    <tspan x="191.4" fill="#1a1b26">                             </tspan>
+    <tspan x="417.6" fill="#c0caf5">    Fair enough. You&#x27;re both welcome to use mine. Deck 8, officer&#x27;s quarters.</tspan>
+    <tspan x="1018.2" fill="#a9b1d6">          </tspan>
+    <tspan x="1096.2" fill="#3b4261">│</tspan>
+  </text>
+  <text y="402.0" xml:space="preserve">
+    <tspan x="12.0" fill="#3b4261">║</tspan>
+    <tspan x="19.8" fill="#565f89">   Beverly Crusher  </tspan>
+    <tspan x="175.8" fill="#3b4261">║</tspan>
+    <tspan x="183.6" fill="#3b4261">│</tspan>
+    <tspan x="191.4" fill="#a9b1d6">                                                                                                                    </tspan>
+    <tspan x="1096.2" fill="#3b4261">│</tspan>
+  </text>
+  <text y="419.0" xml:space="preserve">
+    <tspan x="12.0" fill="#3b4261">║</tspan>
+    <tspan x="19.8" fill="#565f89">   Tuvok            </tspan>
+    <tspan x="175.8" fill="#3b4261">║</tspan>
+    <tspan x="183.6" fill="#3b4261">│</tspan>
+    <tspan x="191.4" fill="#bb9af7">  Seven of Nine</tspan>
+    <tspan x="308.4" fill="#a9b1d6">                                                                                             </tspan>
+    <tspan x="1033.8" fill="#e0af68">SD 54893</tspan>
+    <tspan x="1096.2" fill="#3b4261">│</tspan>
+  </text>
+  <text y="436.0" xml:space="preserve">
+    <tspan x="12.0" fill="#3b4261">║</tspan>
+    <tspan x="19.8" fill="#565f89">   Jadzia Dax       </tspan>
+    <tspan x="175.8" fill="#3b4261">║</tspan>
+    <tspan x="183.6" fill="#3b4261">│</tspan>
+    <tspan x="191.4" fill="#c0caf5">    Acceptable. I will recalibrate Deck 9 myself. It will take 4.7 minutes.</tspan>
+    <tspan x="776.4" fill="#a9b1d6">                                         </tspan>
+    <tspan x="1096.2" fill="#3b4261">│</tspan>
+  </text>
+  <text y="453.0" xml:space="preserve">
+    <tspan x="12.0" fill="#3b4261">║</tspan>
+    <tspan x="19.8" fill="#565f89">   Jean-Luc Picard  </tspan>
+    <tspan x="175.8" fill="#3b4261">║</tspan>
+    <tspan x="183.6" fill="#3b4261">│</tspan>
+    <tspan x="191.4" fill="#a9b1d6">                                                                                                                    </tspan>
+    <tspan x="1096.2" fill="#3b4261">│</tspan>
+  </text>
+  <text y="470.0" xml:space="preserve">
+    <tspan x="12.0" fill="#3b4261">║</tspan>
+    <tspan x="19.8" fill="#565f89">   Kathryn Janeway  </tspan>
+    <tspan x="175.8" fill="#3b4261">║</tspan>
+    <tspan x="183.6" fill="#3b4261">│</tspan>
+    <tspan x="191.4" fill="#73daca">  T&#x27;Pol</tspan>
+    <tspan x="246.0" fill="#a9b1d6">                                                                                                     </tspan>
+    <tspan x="1033.8" fill="#e0af68">SD 54893</tspan>
+    <tspan x="1096.2" fill="#3b4261">│</tspan>
+  </text>
+  <text y="487.0" xml:space="preserve">
+    <tspan x="12.0" fill="#3b4261">║</tspan>
+    <tspan x="19.8" fill="#565f89">   Jonathan Archer  </tspan>
+    <tspan x="175.8" fill="#3b4261">║</tspan>
+    <tspan x="183.6" fill="#3b4261">│</tspan>
+    <tspan x="191.4" fill="#c0caf5">    I could assist. I have experience with acoustic resonance tuning.</tspan>
+    <tspan x="729.6" fill="#a9b1d6">                                               </tspan>
+    <tspan x="1096.2" fill="#3b4261">│</tspan>
+  </text>
+  <text y="504.0" xml:space="preserve">
+    <tspan x="12.0" fill="#3b4261">║</tspan>
+    <tspan x="19.8" fill="#565f89">   Hoshi Sato       </tspan>
+    <tspan x="175.8" fill="#3b4261">║</tspan>
+    <tspan x="183.6" fill="#3b4261">│</tspan>
+    <tspan x="191.4" fill="#a9b1d6">                                                                                                                    </tspan>
+    <tspan x="1096.2" fill="#3b4261">│</tspan>
+  </text>
+  <text y="521.0" xml:space="preserve">
+    <tspan x="12.0" fill="#3b4261">║</tspan>
+    <tspan x="19.8" fill="#565f89">   Tom Paris        </tspan>
+    <tspan x="175.8" fill="#3b4261">║</tspan>
+    <tspan x="183.6" fill="#3b4261">│</tspan>
+    <tspan x="191.4" fill="#1a1b26">                             </tspan>
+    <tspan x="417.6" fill="#7aa2f7">  Riker</tspan>
+    <tspan x="472.2" fill="#a9b1d6">                                                                        </tspan>
+    <tspan x="1033.8" fill="#e0af68">SD 54893</tspan>
+    <tspan x="1096.2" fill="#3b4261">│</tspan>
+  </text>
+  <text y="538.0" xml:space="preserve">
+    <tspan x="12.0" fill="#3b4261">║</tspan>
+    <tspan x="19.8" fill="#565f89">   Harry Kim        </tspan>
+    <tspan x="175.8" fill="#3b4261">║</tspan>
+    <tspan x="183.6" fill="#3b4261">│</tspan>
+    <tspan x="191.4" fill="#1a1b26">                             </tspan>
+    <tspan x="417.6" fill="#c0caf5">    Sonic shower engineering team. I love it.</tspan>
+    <tspan x="768.6" fill="#a9b1d6">                                          </tspan>
+    <tspan x="1096.2" fill="#3b4261">│</tspan>
+  </text>
+  <text y="555.0" xml:space="preserve">
+    <tspan x="12.0" fill="#3b4261">║</tspan>
+    <tspan x="19.8" fill="#a9b1d6">                    </tspan>
+    <tspan x="175.8" fill="#3b4261">║</tspan>
+    <tspan x="183.6" fill="#3b4261">│</tspan>
+    <tspan x="191.4" fill="#a9b1d6">                                                                                                                    </tspan>
+    <tspan x="1096.2" fill="#3b4261">│</tspan>
+  </text>
+  <text y="572.0" xml:space="preserve">
+    <tspan x="12.0" fill="#3b4261">║</tspan>
+    <tspan x="19.8" fill="#a9b1d6">                    </tspan>
+    <tspan x="175.8" fill="#3b4261">║</tspan>
+    <tspan x="183.6" fill="#3b4261">└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘</tspan>
+  </text>
+  <text y="589.0" xml:space="preserve">
+    <tspan x="12.0" fill="#3b4261">║</tspan>
+    <tspan x="19.8" fill="#a9b1d6">                    </tspan>
+    <tspan x="175.8" fill="#3b4261">║</tspan>
+    <tspan x="183.6" fill="#3b4261">┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐</tspan>
+  </text>
+  <text y="606.0" xml:space="preserve">
+    <tspan x="12.0" fill="#3b4261">║</tspan>
+    <tspan x="19.8" fill="#a9b1d6">                    </tspan>
+    <tspan x="175.8" fill="#3b4261">║</tspan>
+    <tspan x="183.6" fill="#3b4261">│</tspan>
+    <tspan x="191.4" fill="#565f89"> B  I  U  ~</tspan>
+    <tspan x="277.2" fill="#a9b1d6">                                                                                                       </tspan>
+    <tspan x="1080.6" fill="#9ece6a">&gt; </tspan>
+    <tspan x="1096.2" fill="#3b4261">│</tspan>
+  </text>
+  <text y="623.0" xml:space="preserve">
+    <tspan x="12.0" fill="#3b4261">║</tspan>
+    <tspan x="19.8" fill="#a9b1d6">                    </tspan>
+    <tspan x="175.8" fill="#3b4261">║</tspan>
+    <tspan x="183.6" fill="#3b4261">│</tspan>
+    <tspan x="191.4" fill="#565f89"> Type a message to Off topic...                                                                                     </tspan>
+    <tspan x="1096.2" fill="#3b4261">│</tspan>
+  </text>
+  <text y="640.0" xml:space="preserve">
+    <tspan x="12.0" fill="#3b4261">╚════════════════════╝</tspan>
+    <tspan x="183.6" fill="#3b4261">└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘</tspan>
+  </text>
+  <text y="657.0" xml:space="preserve">
+    <tspan x="12.0" fill="#565f89"> * Connected  | Off topic | Tab: sidebar  | ?: help | C-k: search                                                                           </tspan>
+  </text>
+</svg>

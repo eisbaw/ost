@@ -143,7 +143,10 @@ fn render_header(area: Rect, buf: &mut Buffer, app: &App) {
 
     // Calculate spacing to right-align the right-side elements
     let left_width = title_text.len();
-    let right_content = format!("[?] Help  {} {}  {} ", status_symbol, status_text, app.user_name);
+    let right_content = format!(
+        "[?] Help  {} {}  {} ",
+        status_symbol, status_text, app.user_name
+    );
     let right_width = right_content.len();
     let padding_width = area.width.saturating_sub((left_width + right_width) as u16) as usize;
     let padding = Span::raw(" ".repeat(padding_width));

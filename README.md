@@ -6,8 +6,11 @@ A command-line client for Microsoft Teams written in Rust.
 
 ![OST Logo](docs/logo_ost.jpg)
 
+![TUI Screenshot](docs/tui-screenshot.svg)
+
 ## Features
 
+- **TUI**: Interactive terminal interface with teams, channels, chats, and per-user message colors
 - **Authentication**: OAuth2 device code flow for work/school and personal accounts
 - **Messaging**: List chats, read messages, send messages (stable)
 - **Teams**: List joined teams and channels (stable)
@@ -20,6 +23,7 @@ A command-line client for Microsoft Teams written in Rust.
 
 | Feature | Status |
 |---------|--------|
+| TUI | Working |
 | Authentication | Stable |
 | Chat / Messaging | Stable |
 | Teams / Channels | Stable |
@@ -76,6 +80,14 @@ cargo build --features "audio,video-capture"
 ```
 
 ## Usage
+
+### TUI (Terminal User Interface)
+
+Launch the interactive TUI for browsing teams, channels, and chats:
+
+```bash
+teams-cli tui
+```
 
 ### Authentication
 
@@ -175,6 +187,7 @@ Commands:
   send       Send a message
              --to ID    Chat ID to send to
   teams      List joined teams and channels
+  tui        Launch interactive terminal user interface
   presence   Get/set presence status
   trouter    Connect to push notification service
   call-test  Place a test call

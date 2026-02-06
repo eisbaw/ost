@@ -443,7 +443,11 @@ fn render_item(buf: &mut Buffer, ctx: &RowCtx, item: &SidebarItem, state: &Sideb
 
         SidebarItem::Chat(ci) => {
             let chat = &state.chats[*ci];
-            let icon = if chat.is_group { "\u{1F465}" } else { "\u{1F464}" };
+            let icon = if chat.is_group {
+                "\u{1F465}"
+            } else {
+                "\u{1F464}"
+            };
             let cursor = if ctx.selected { "\u{25BA}" } else { " " };
             let label = format!("{}{} {}", cursor, icon, chat.name);
             let badge = if chat.unread > 0 {

@@ -201,7 +201,8 @@ pub fn render(area: Rect, buf: &mut Buffer, state: &MessagesState, focused: bool
     }
 
     // Pre-render all messages into a line buffer (single pass produces lines + ranges).
-    let (all_lines, msg_line_ranges) = build_message_lines(state, messages_area.width as usize, user_name);
+    let (all_lines, msg_line_ranges) =
+        build_message_lines(state, messages_area.width as usize, user_name);
     let total_lines = all_lines.len();
     let visible_height = messages_area.height as usize;
 
@@ -276,12 +277,24 @@ fn build_message_lines(
             .unwrap_or(false);
 
         // Render main message card.
-        render_message_card(&mut lines, msg, width, is_selected, false, 0, msg_idx, today, user_name);
+        render_message_card(
+            &mut lines,
+            msg,
+            width,
+            is_selected,
+            false,
+            0,
+            msg_idx,
+            today,
+            user_name,
+        );
 
         // Render thread replies if expanded.
         if thread_expanded && !msg.replies.is_empty() {
             for reply in &msg.replies {
-                render_message_card(&mut lines, reply, width, false, true, 4, msg_idx, today, user_name);
+                render_message_card(
+                    &mut lines, reply, width, false, true, 4, msg_idx, today, user_name,
+                );
             }
         } else if msg.reply_count > 0 && !thread_expanded {
             // Show collapsed thread indicator.
@@ -518,7 +531,12 @@ fn format_timestamp(raw: &str, today: NaiveDate) -> String {
                 Weekday::Sat => "Sat",
                 Weekday::Sun => "Sun",
             };
-            format!("{} {:02}:{:02}", weekday, local_dt.hour(), local_dt.minute())
+            format!(
+                "{} {:02}:{:02}",
+                weekday,
+                local_dt.hour(),
+                local_dt.minute()
+            )
         } else {
             let month = match ts_date.month() {
                 1 => "Jan",
