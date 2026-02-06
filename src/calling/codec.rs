@@ -1,11 +1,11 @@
-//! H.264 encode/decode wrappers around the `openh264` crate (v0.5 API).
+//! H.264 encode/decode wrappers around the `openh264` crate (v0.9 API).
 //!
 //! Encoder: takes I420 YUV frames, produces H.264 NAL units.
 //! Decoder: takes H.264 NAL units, produces I420 YUV frames.
 
 use anyhow::{Context, Result};
-use openh264::decoder::Decoder;
-use openh264::encoder::{Encoder, EncoderConfig};
+use openh264::decoder::{Decoder, DecoderConfig};
+use openh264::encoder::{BitRate, Encoder, EncoderConfig, FrameRate};
 use openh264::formats::YUVSource;
 use openh264::OpenH264API;
 
@@ -17,11 +17,11 @@ struct RawI420<'a> {
 }
 
 impl<'a> YUVSource for RawI420<'a> {
-    fn width(&self) -> i32 {
-        self.width as i32
+    fn dimensions(&self) -> (usize, usize) {
+        (self.width, self.height)
     }
-    fn height(&self) -> i32 {
-        self.height as i32
+    fn strides(&self) -> (usize, usize, usize) {
+        (self.width, self.width / 2, self.width / 2)
     }
     fn y(&self) -> &[u8] {
         &self.data[..self.width * self.height]
@@ -35,15 +35,6 @@ impl<'a> YUVSource for RawI420<'a> {
         let y_size = self.width * self.height;
         let uv_size = (self.width / 2) * (self.height / 2);
         &self.data[y_size + uv_size..y_size + uv_size * 2]
-    }
-    fn y_stride(&self) -> i32 {
-        self.width as i32
-    }
-    fn u_stride(&self) -> i32 {
-        (self.width / 2) as i32
-    }
-    fn v_stride(&self) -> i32 {
-        (self.width / 2) as i32
     }
 }
 
@@ -66,12 +57,12 @@ impl H264Encoder {
     /// Create a new encoder for the given resolution.
     pub fn new(width: u32, height: u32, fps: f32, bitrate_kbps: u32) -> Result<Self> {
         let api = OpenH264API::from_source();
-        let config = EncoderConfig::new(width, height)
-            .max_frame_rate(fps)
-            .set_bitrate_bps(bitrate_kbps * 1000);
+        let config = EncoderConfig::new()
+            .max_frame_rate(FrameRate::from_hz(fps))
+            .bitrate(BitRate::from_bps(bitrate_kbps * 1000));
 
         let encoder =
-            Encoder::with_config(api, config).context("Failed to create openh264 encoder")?;
+            Encoder::with_api_config(api, config).context("Failed to create openh264 encoder")?;
 
         Ok(Self {
             encoder,
@@ -133,7 +124,8 @@ pub struct H264Decoder {
 impl H264Decoder {
     pub fn new() -> Result<Self> {
         let api = OpenH264API::from_source();
-        let decoder = Decoder::new(api).context("Failed to create openh264 decoder")?;
+        let decoder = Decoder::with_api_config(api, DecoderConfig::new())
+            .context("Failed to create openh264 decoder")?;
         Ok(Self { decoder })
     }
 
@@ -148,17 +140,15 @@ impl H264Decoder {
 
         match self.decoder.decode(&annexb) {
             Ok(Some(yuv)) => {
-                let (width, height) = yuv.dimension_rgb();
-                let w = width;
-                let h = height;
+                let (w, h) = yuv.dimensions();
+                let (y_stride, u_stride, v_stride) = yuv.strides();
 
                 // Extract I420 planes
                 let y_size = w * h;
                 let uv_size = (w / 2) * (h / 2);
                 let mut data = vec![0u8; y_size + uv_size * 2];
 
-                // Copy Y plane
-                let y_stride = yuv.y().len() / h;
+                // Copy Y plane (stride may be wider than width due to padding)
                 for row in 0..h {
                     let src_start = row * y_stride;
                     let dst_start = row * w;
@@ -167,7 +157,6 @@ impl H264Decoder {
                 }
 
                 // Copy U plane
-                let u_stride = yuv.u().len() / (h / 2);
                 let half_w = w / 2;
                 let half_h = h / 2;
                 for row in 0..half_h {
@@ -178,7 +167,6 @@ impl H264Decoder {
                 }
 
                 // Copy V plane
-                let v_stride = yuv.v().len() / (h / 2);
                 for row in 0..half_h {
                     let src_start = row * v_stride;
                     let dst_start = y_size + uv_size + row * half_w;

@@ -12,6 +12,7 @@ pkgs.mkShell {
     jq
     ripgrep
     fd
+    gh
 
     # Rust development
     rustc
