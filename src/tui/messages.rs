@@ -135,7 +135,7 @@ impl MessagesState {
 // ---------------------------------------------------------------------------
 
 /// Render the messages pane into the given area.
-pub fn render(area: Rect, buf: &mut Buffer, state: &MessagesState, focused: bool) {
+pub fn render(area: Rect, buf: &mut Buffer, state: &MessagesState, focused: bool, user_name: &str) {
     let border_style = if focused {
         Style::default().fg(Color::Yellow)
     } else {
@@ -201,7 +201,7 @@ pub fn render(area: Rect, buf: &mut Buffer, state: &MessagesState, focused: bool
     }
 
     // Pre-render all messages into a line buffer (single pass produces lines + ranges).
-    let (all_lines, msg_line_ranges) = build_message_lines(state, messages_area.width as usize);
+    let (all_lines, msg_line_ranges) = build_message_lines(state, messages_area.width as usize, user_name);
     let total_lines = all_lines.len();
     let visible_height = messages_area.height as usize;
 
@@ -260,6 +260,7 @@ fn render_channel_header(area: Rect, buf: &mut Buffer, header: &str) {
 fn build_message_lines(
     state: &MessagesState,
     width: usize,
+    user_name: &str,
 ) -> (Vec<Line<'static>>, Vec<(usize, usize)>) {
     let today = Local::now().naive_local().date();
     let mut lines: Vec<Line<'static>> = Vec::new();
@@ -275,12 +276,12 @@ fn build_message_lines(
             .unwrap_or(false);
 
         // Render main message card.
-        render_message_card(&mut lines, msg, width, is_selected, false, 0, msg_idx, today);
+        render_message_card(&mut lines, msg, width, is_selected, false, 0, msg_idx, today, user_name);
 
         // Render thread replies if expanded.
         if thread_expanded && !msg.replies.is_empty() {
             for reply in &msg.replies {
-                render_message_card(&mut lines, reply, width, false, true, 4, msg_idx, today);
+                render_message_card(&mut lines, reply, width, false, true, 4, msg_idx, today, user_name);
             }
         } else if msg.reply_count > 0 && !thread_expanded {
             // Show collapsed thread indicator.
@@ -316,23 +317,39 @@ fn render_message_card(
     indent: usize,
     msg_idx: usize,
     today: NaiveDate,
+    user_name: &str,
 ) {
+    let is_own = msg.sender == user_name;
     let indent_str: String = " ".repeat(indent);
     let reply_prefix = if is_reply { " -> " } else { "" };
 
+    // Own (non-reply) messages use 75% width and right-align.
+    let (effective_width, left_margin) = if is_own && !is_reply {
+        let ew = (width * 3 / 4).max(40).min(width);
+        (ew, width.saturating_sub(ew))
+    } else {
+        (width, 0)
+    };
+
     // Usable content width after indent, reply prefix, and small margins.
     let prefix_len = indent + reply_prefix.len();
-    let content_width = width.saturating_sub(prefix_len).saturating_sub(2); // 1 char margin each side
+    let content_width = effective_width.saturating_sub(prefix_len).saturating_sub(2);
 
     if content_width < 10 {
         return;
     }
 
-    // Background color: alternate shades; highlight selected.
+    // Background color: own messages get a subtle blue tint.
     let bg = if is_selected {
-        Color::Rgb(55, 55, 70)
+        if is_own {
+            Color::Rgb(45, 55, 70)
+        } else {
+            Color::Rgb(55, 55, 70)
+        }
     } else if is_reply {
         Color::Rgb(30, 30, 38)
+    } else if is_own {
+        Color::Rgb(30, 38, 50)
     } else if msg_idx % 2 == 0 {
         Color::Rgb(35, 35, 45)
     } else {
@@ -341,8 +358,9 @@ fn render_message_card(
 
     let selection_indicator = if is_selected && !is_reply { "> " } else { "  " };
 
+    let sender_color = username_to_color(&msg.sender);
     let sender_style = Style::default()
-        .fg(Color::White)
+        .fg(sender_color)
         .bg(bg)
         .add_modifier(Modifier::BOLD);
 
@@ -352,11 +370,15 @@ fn render_message_card(
 
     let formatted_ts = format_timestamp(&msg.timestamp, today);
 
-    // Helper: build a full-width line with background color.
-    // Pads the right side so the background color fills the entire row.
+    // Helper: build a line padded to effective_width, with optional left margin
+    // for right-aligned own messages.
     let make_bg_line = |spans: Vec<Span<'static>>, used_chars: usize| -> Line<'static> {
-        let pad = width.saturating_sub(used_chars);
-        let mut all_spans = spans;
+        let pad = effective_width.saturating_sub(used_chars);
+        let mut all_spans = Vec::new();
+        if left_margin > 0 {
+            all_spans.push(Span::raw(" ".repeat(left_margin)));
+        }
+        all_spans.extend(spans);
         all_spans.push(Span::styled(" ".repeat(pad), bg_style));
         Line::from(all_spans)
     };
@@ -548,6 +570,42 @@ fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
         }
     }
     result
+}
+
+/// Derive a deterministic RGB color from a username.
+///
+/// Hash all bytes, truncate to u8, scale to 0..359 HSV hue, convert
+/// HSV(hue, 0.7, 0.9) to RGB for a vivid but readable sender-name color.
+fn username_to_color(name: &str) -> Color {
+    let hash: u8 = name.bytes().fold(0u8, |acc, b| acc.wrapping_add(b));
+    let hue = (hash as f32 / 255.0) * 359.0;
+    hsv_to_rgb(hue, 0.7, 0.9)
+}
+
+/// Convert HSV to ratatui RGB Color. h in [0,360), s and v in [0,1].
+fn hsv_to_rgb(h: f32, s: f32, v: f32) -> Color {
+    let c = v * s;
+    let hp = h / 60.0;
+    let x = c * (1.0 - (hp % 2.0 - 1.0).abs());
+    let m = v - c;
+    let (r1, g1, b1) = if hp < 1.0 {
+        (c, x, 0.0)
+    } else if hp < 2.0 {
+        (x, c, 0.0)
+    } else if hp < 3.0 {
+        (0.0, c, x)
+    } else if hp < 4.0 {
+        (0.0, x, c)
+    } else if hp < 5.0 {
+        (x, 0.0, c)
+    } else {
+        (c, 0.0, x)
+    };
+    Color::Rgb(
+        ((r1 + m) * 255.0) as u8,
+        ((g1 + m) * 255.0) as u8,
+        ((b1 + m) * 255.0) as u8,
+    )
 }
 
 /// Compute scroll offset that keeps the selected message visible.

@@ -82,6 +82,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         frame.buffer_mut(),
         &app.messages,
         app.active_pane == Pane::Messages,
+        &app.user_name,
     );
 
     // Render compose box
