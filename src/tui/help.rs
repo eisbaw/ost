@@ -10,7 +10,7 @@ use ratatui::{
 
 /// Popup dimensions.
 const POPUP_WIDTH: u16 = 84;
-const POPUP_HEIGHT: u16 = 30;
+const POPUP_HEIGHT: u16 = 38;
 
 /// A shortcut entry: key binding and its description.
 struct Shortcut {
@@ -58,6 +58,28 @@ const NAVIGATION: Category = Category {
         Shortcut {
             key: "Ctrl+K",
             desc: "Global search",
+        },
+    ],
+};
+
+const MOUSE: Category = Category {
+    title: "MOUSE",
+    shortcuts: &[
+        Shortcut {
+            key: "Click",
+            desc: "Focus / Open item",
+        },
+        Shortcut {
+            key: "Click text",
+            desc: "Place text cursor",
+        },
+        Shortcut {
+            key: "Click again",
+            desc: "Toggle message thread",
+        },
+        Shortcut {
+            key: "Wheel",
+            desc: "Scroll pane under pointer",
         },
     ],
 };
@@ -222,7 +244,7 @@ pub fn render_help_popup(frame: &mut Frame) {
             Span::styled("(? to close) ", Style::default().fg(Color::Gray)),
         ]))
         .title_bottom(Line::from(Span::styled(
-            " Press any key to close ",
+            " Press any key or click to close ",
             Style::default().fg(Color::Gray),
         )));
 
@@ -237,8 +259,8 @@ pub fn render_help_popup(frame: &mut Frame) {
     let [left_col, right_col] =
         Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(inner);
 
-    // Left column: Navigation, Panes, Views
-    let left_lines = build_column_lines(&[&NAVIGATION, &PANES, &VIEWS]);
+    // Left column: Mouse, Navigation, Panes, Views
+    let left_lines = build_column_lines(&[&MOUSE, &NAVIGATION, &PANES, &VIEWS]);
     let left_para = Paragraph::new(left_lines);
     frame.render_widget(left_para, inset(left_col, 1, 1));
 

@@ -89,6 +89,17 @@ Launch the interactive TUI for browsing teams, channels, and chats:
 teams-cli tui
 ```
 
+Mouse controls are enabled automatically:
+
+- **Click** a team to expand or collapse it, or a channel/chat to open it.
+- **Wheel** scrolls the sidebar, messages, search results, or debug log under the pointer, three lines at a time.
+- **Click a message** to select it; click the selected message again to toggle its loaded thread replies.
+- **Click compose text** to focus the editor and place the cursor. Press Enter to send.
+- **Click Help** in the header or status bar to open help; click or press any key to close it.
+- **Click search** in the status bar (or press Ctrl+K), then click a result to open it. Click outside the search overlay or press Esc to close it.
+
+Keyboard navigation remains available. For terminal text selection, use your terminal's mouse-capture override (commonly Shift+drag). Mouse capture is released when OST exits.
+
 ### Authentication
 
 Login with device code flow:
@@ -212,6 +223,12 @@ Run the test suite:
 just test
 # or
 cargo test
+```
+
+Verify mouse input and terminal cleanup in a pseudo-terminal with offline fixture data:
+
+```bash
+python3 tests/tui_mouse_pty.py
 ```
 
 ### End-to-End Tests

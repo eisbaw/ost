@@ -14,6 +14,7 @@ use super::compose;
 use super::debug_log;
 use super::help;
 use super::messages;
+use super::mouse::Target;
 use super::search;
 use super::sidebar;
 
@@ -31,8 +32,9 @@ fn status_indicator(is_online: bool) -> (&'static str, Color) {
 }
 
 /// Main render function
-pub fn render(frame: &mut Frame, app: &App) {
+pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
+    app.mouse.clear();
 
     // Layout: header (1 line) + main content + status bar (1 line)
     let [header_area, main_area, status_area] = Layout::vertical([
@@ -65,8 +67,9 @@ pub fn render(frame: &mut Frame, app: &App) {
     sidebar::render(
         sidebar_area,
         frame.buffer_mut(),
-        &app.sidebar,
+        &mut app.sidebar,
         app.active_pane == Pane::Sidebar,
+        &mut app.mouse,
     );
 
     // Split content area: messages (fill) + compose box (4 lines)
@@ -80,9 +83,10 @@ pub fn render(frame: &mut Frame, app: &App) {
     messages::render(
         messages_area,
         frame.buffer_mut(),
-        &app.messages,
+        &mut app.messages,
         app.active_pane == Pane::Messages,
         &app.user_name,
+        &mut app.mouse,
     );
 
     // Render compose box
@@ -92,11 +96,13 @@ pub fn render(frame: &mut Frame, app: &App) {
         &app.compose,
         &app.channel_name,
         app.active_pane == Pane::Compose,
+        &mut app.mouse,
     );
 
     // Render debug log pane if visible
     if let Some(debug_area) = debug_log_area {
-        debug_log::render(debug_area, frame.buffer_mut(), &app.debug_log);
+        debug_log::render(debug_area, frame.buffer_mut(), &mut app.debug_log);
+        app.mouse.add(debug_area, Target::DebugLog);
     }
 
     // Render status bar
@@ -104,17 +110,19 @@ pub fn render(frame: &mut Frame, app: &App) {
 
     // Render search overlay (on top of main content, below help popup)
     if app.search.active {
-        search::render_search_overlay(frame, &app.search);
+        search::render_search_overlay(frame, &mut app.search, &mut app.mouse);
     }
 
     // Render help popup overlay (on top of everything else)
     if app.show_help {
+        app.mouse.clear();
+        app.mouse.add(area, Target::Help);
         help::render_help_popup(frame);
     }
 }
 
 /// Render the header bar
-fn render_header(area: Rect, buf: &mut Buffer, app: &App) {
+fn render_header(area: Rect, buf: &mut Buffer, app: &mut App) {
     let title_text = " OST Client ";
     let title = Span::styled(
         title_text,
@@ -143,13 +151,19 @@ fn render_header(area: Rect, buf: &mut Buffer, app: &App) {
 
     // Calculate spacing to right-align the right-side elements
     let left_width = title_text.len();
-    let right_content = format!(
-        "[?] Help  {} {}  {} ",
-        status_symbol, status_text, app.user_name
-    );
-    let right_width = right_content.len();
+    let right_width = help_indicator.width() + online_status.width() + user_name.width();
     let padding_width = area.width.saturating_sub((left_width + right_width) as u16) as usize;
     let padding = Span::raw(" ".repeat(padding_width));
+    app.mouse.add(
+        Rect::new(
+            area.x.saturating_add((left_width + padding_width) as u16),
+            area.y,
+            help_indicator.width() as u16,
+            area.height,
+        )
+        .intersection(area),
+        Target::Help,
+    );
 
     let header_line = Line::from(vec![
         title,
@@ -165,7 +179,7 @@ fn render_header(area: Rect, buf: &mut Buffer, app: &App) {
 }
 
 /// Render the status bar
-fn render_status(area: Rect, buf: &mut Buffer, app: &App) {
+fn render_status(area: Rect, buf: &mut Buffer, app: &mut App) {
     // If there's a status message, show it prominently.
     if let Some(ref msg) = app.status_message {
         let style = if app.status_is_error {
@@ -215,6 +229,22 @@ fn render_status(area: Rect, buf: &mut Buffer, app: &App) {
         Span::styled(" | ", sep_style),
         search_hint,
     ]);
+
+    let mut column = area.x;
+    for span in &status_line.spans {
+        let target = match span.content.as_ref() {
+            "?: help" => Some(Target::Help),
+            "C-k: search" => Some(Target::Search),
+            _ => None,
+        };
+        if let Some(target) = target {
+            app.mouse.add(
+                Rect::new(column, area.y, span.width() as u16, area.height).intersection(area),
+                target,
+            );
+        }
+        column = column.saturating_add(span.width() as u16);
+    }
 
     let status = Paragraph::new(status_line).style(Style::default().bg(Color::DarkGray));
 

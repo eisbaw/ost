@@ -9,8 +9,10 @@ mod debug_log;
 mod help;
 mod log_capture;
 mod messages;
+mod mouse;
 mod search;
 mod sidebar;
+mod text_input;
 mod ui;
 
 pub use app::run;

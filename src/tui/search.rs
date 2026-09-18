@@ -10,7 +10,9 @@ use ratatui::{
 };
 
 use super::messages::MessagesState;
+use super::mouse::{HitMap, Target, Viewport};
 use super::sidebar::SidebarState;
+use super::text_input::display_text;
 
 // ---------------------------------------------------------------------------
 // Search result types
@@ -55,11 +57,13 @@ pub struct SearchState {
     pub results: Vec<SearchResult>,
     /// Index of the currently selected result (for navigation).
     pub selected: usize,
+    pub viewport: Viewport,
 }
 
 impl SearchState {
     /// Activate the search overlay (called on Ctrl+K).
     pub fn activate(&mut self) {
+        self.viewport = Viewport::default();
         self.active = true;
         self.query.clear();
         self.cursor_pos = 0;
@@ -130,6 +134,7 @@ impl SearchState {
 
     /// Move selection to the previous result.
     pub fn select_previous(&mut self) {
+        self.viewport.follow_selection = true;
         if self.selected > 0 {
             self.selected -= 1;
         }
@@ -137,6 +142,7 @@ impl SearchState {
 
     /// Move selection to the next result.
     pub fn select_next(&mut self) {
+        self.viewport.follow_selection = true;
         if !self.results.is_empty() && self.selected + 1 < self.results.len() {
             self.selected += 1;
         }
@@ -151,6 +157,7 @@ impl SearchState {
     ///
     /// Called whenever the query changes.
     pub fn update_results(&mut self, sidebar: &SidebarState, messages: &MessagesState) {
+        self.viewport = Viewport::default();
         self.results.clear();
         self.selected = 0;
 
@@ -249,12 +256,14 @@ const SEARCH_BAR_HEIGHT: u16 = 3;
 /// - A dropdown list of results below it
 ///
 /// The overlay is drawn on top of existing content using Clear.
-pub fn render_search_overlay(frame: &mut Frame, state: &SearchState) {
+pub fn render_search_overlay(frame: &mut Frame, state: &mut SearchState, hits: &mut HitMap) {
     if !state.active {
         return;
     }
 
     let area = frame.area();
+    hits.clear();
+    hits.add(area, Target::DismissSearch);
 
     // The overlay starts at the top of the screen, below the header (row 1).
     // Search bar: 3 lines (border + input + border).
@@ -269,7 +278,7 @@ pub fn render_search_overlay(frame: &mut Frame, state: &SearchState) {
     };
 
     let total_height = SEARCH_BAR_HEIGHT + results_height;
-    let overlay_y = 1; // Below the header bar
+    let overlay_y = area.y.saturating_add(1); // Below the header bar
     let overlay_height = total_height.min(area.height.saturating_sub(2)); // Leave room for status
 
     if overlay_height == 0 {
@@ -277,6 +286,7 @@ pub fn render_search_overlay(frame: &mut Frame, state: &SearchState) {
     }
 
     let overlay_area = Rect::new(area.x, overlay_y, area.width, overlay_height);
+    hits.add(overlay_area, Target::Search);
 
     // Clear the area behind the overlay.
     frame.render_widget(Clear, overlay_area);
@@ -288,7 +298,7 @@ pub fn render_search_overlay(frame: &mut Frame, state: &SearchState) {
         overlay_area.width,
         SEARCH_BAR_HEIGHT.min(overlay_area.height),
     );
-    render_search_bar(search_bar_area, frame, state);
+    render_search_bar(search_bar_area, frame, state, hits);
 
     // Results dropdown area (if there's room).
     if results_height > 0 && overlay_area.height > SEARCH_BAR_HEIGHT {
@@ -298,12 +308,12 @@ pub fn render_search_overlay(frame: &mut Frame, state: &SearchState) {
             overlay_area.width.saturating_sub(2),
             overlay_area.height.saturating_sub(SEARCH_BAR_HEIGHT),
         );
-        render_results_dropdown(results_area, frame.buffer_mut(), state);
+        render_results_dropdown(results_area, frame.buffer_mut(), state, hits);
     }
 }
 
 /// Render the search input bar.
-fn render_search_bar(area: Rect, frame: &mut Frame, state: &SearchState) {
+fn render_search_bar(area: Rect, frame: &mut Frame, state: &SearchState, hits: &mut HitMap) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan))
@@ -342,45 +352,33 @@ fn render_search_bar(area: Rect, frame: &mut Frame, state: &SearchState) {
         ));
         Paragraph::new(line).render(inner, frame.buffer_mut());
     } else {
-        // Render query text with horizontal scrolling.
-        let avail = w.saturating_sub(2); // margin
-        let query_chars: Vec<char> = state.query.chars().collect();
-        let query_len = query_chars.len();
-
-        let (visible, cursor_offset) = if query_len <= avail {
-            (state.query.clone(), state.cursor_pos)
-        } else {
-            let scroll_start = if state.cursor_pos < avail {
-                0
-            } else {
-                state.cursor_pos - avail + 1
-            };
-            let end = (scroll_start + avail).min(query_len);
-            let visible: String = query_chars[scroll_start..end].iter().collect();
-            let cursor_offset = state.cursor_pos - scroll_start;
-            (visible, cursor_offset)
-        };
-
+        let display = display_text(&state.query, state.cursor_pos, w);
         let line = Line::from(Span::styled(
-            format!(" {}", visible),
+            format!(" {}", display.visible),
             Style::default().fg(Color::White),
         ));
         Paragraph::new(line).render(inner, frame.buffer_mut());
-
-        // Set cursor position.
-        let cx = inner.x + 1 + cursor_offset as u16;
-        let cy = inner.y;
-        frame.set_cursor_position((cx, cy));
     }
 
-    // If query is empty, still show the cursor at the start.
-    if state.query.is_empty() {
-        frame.set_cursor_position((inner.x + 1, inner.y));
+    let display = display_text(&state.query, state.cursor_pos, w);
+    for (column, position) in display.positions.iter().enumerate() {
+        hits.add(
+            Rect::new(inner.x + 1 + column as u16, inner.y, 1, 1),
+            Target::SearchCursor(*position),
+        );
+    }
+    if inner.width >= 2 {
+        frame.set_cursor_position((inner.x + 1 + display.cursor_offset as u16, inner.y));
     }
 }
 
 /// Render the results dropdown below the search bar.
-fn render_results_dropdown(area: Rect, buf: &mut Buffer, state: &SearchState) {
+fn render_results_dropdown(
+    area: Rect,
+    buf: &mut Buffer,
+    state: &mut SearchState,
+    hits: &mut HitMap,
+) {
     if area.height == 0 || area.width == 0 {
         return;
     }
@@ -409,11 +407,12 @@ fn render_results_dropdown(area: Rect, buf: &mut Buffer, state: &SearchState) {
     let visible_count = state.results.len().min(inner.height as usize);
 
     // Compute scroll offset so selected result is visible.
-    let scroll_offset = if state.selected < visible_count {
-        0
-    } else {
-        state.selected - visible_count + 1
-    };
+    state.viewport.prepare(
+        state.results.len(),
+        visible_count,
+        state.selected..state.selected + 1,
+    );
+    let scroll_offset = state.viewport.offset;
 
     for (row, idx) in (scroll_offset..state.results.len())
         .take(visible_count)
@@ -424,6 +423,7 @@ fn render_results_dropdown(area: Rect, buf: &mut Buffer, state: &SearchState) {
         let row_area = Rect::new(inner.x, inner.y + row as u16, inner.width, 1);
 
         render_result_row(row_area, buf, result, is_selected);
+        hits.add(row_area, Target::SearchResult(idx));
     }
 }
 

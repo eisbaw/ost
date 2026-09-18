@@ -43,6 +43,14 @@ pub struct Backend {
 }
 
 impl Backend {
+    /// An inert command sink for UI interaction tests; never starts an API client.
+    #[cfg(test)]
+    pub fn for_test() -> (Self, mpsc::UnboundedReceiver<BackendCommand>) {
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+        let (_, resp_rx) = mpsc::unbounded_channel();
+        (Self { cmd_tx, resp_rx }, cmd_rx)
+    }
+
     /// Start the backend. Spawns a tokio task that processes commands.
     ///
     /// Returns the Backend handle for sending commands and receiving responses.

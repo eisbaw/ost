@@ -9,6 +9,9 @@ use ratatui::{
     Frame,
 };
 
+use super::mouse::{HitMap, Target};
+use super::text_input::display_text;
+
 /// State for the compose box.
 #[derive(Default)]
 pub struct ComposeState {
@@ -126,7 +129,9 @@ pub fn render(
     state: &ComposeState,
     channel_name: &str,
     focused: bool,
+    hits: &mut HitMap,
 ) {
+    hits.add(area, Target::Compose);
     let border_style = if focused {
         Style::default().fg(Color::Yellow)
     } else {
@@ -166,6 +171,14 @@ pub fn render(
         // Render input text into the buffer.
         render_input(input_area, frame.buffer_mut(), state, channel_name);
 
+        let display = display_text(&state.input, state.cursor_pos, input_area.width as usize);
+        for (column, position) in display.positions.iter().enumerate() {
+            hits.add(
+                Rect::new(input_area.x + 1 + column as u16, input_area.y, 1, 1),
+                Target::ComposeCursor(*position),
+            );
+        }
+
         // Set cursor position on the frame (separate borrow).
         if let Some((cx, cy)) = cursor {
             frame.set_cursor_position((cx, cy));
@@ -180,19 +193,14 @@ fn compute_cursor_position(
     state: &ComposeState,
     focused: bool,
 ) -> Option<(u16, u16)> {
-    if !focused {
+    if !focused || input_area.width < 2 || input_area.height == 0 {
         return None;
     }
-
-    if state.input.is_empty() {
-        // Cursor at the start of the input area (after leading space).
-        Some((input_area.x + 1, input_area.y))
-    } else {
-        let w = input_area.width as usize;
-        let display = compose_display_text(&state.input, state.cursor_pos, w);
-        let cursor_x = input_area.x + 1 + display.cursor_offset as u16;
-        Some((cursor_x, input_area.y))
-    }
+    let display = display_text(&state.input, state.cursor_pos, input_area.width as usize);
+    Some((
+        input_area.x + 1 + display.cursor_offset as u16,
+        input_area.y,
+    ))
 }
 
 /// Render the formatting toolbar line.
@@ -247,77 +255,11 @@ fn render_input(area: Rect, buf: &mut Buffer, state: &ComposeState, channel_name
         Paragraph::new(line).render(area, buf);
     } else {
         // Show input text with horizontal scrolling.
-        let display = compose_display_text(&state.input, state.cursor_pos, w);
+        let display = display_text(&state.input, state.cursor_pos, w);
         let line = Line::from(Span::styled(
             format!(" {}", display.visible),
             Style::default().fg(Color::White),
         ));
         Paragraph::new(line).render(area, buf);
-    }
-}
-
-/// Information about what text to display and where the cursor is.
-struct DisplayText {
-    /// The visible portion of text to render.
-    visible: String,
-    /// The cursor offset within the visible text (in columns).
-    cursor_offset: usize,
-}
-
-/// Compute the visible text and cursor offset for display.
-///
-/// For multi-line input, newlines are shown as " | " separators on the single
-/// display line. Horizontal scrolling keeps the cursor visible.
-fn compose_display_text(input: &str, cursor_pos: usize, width: usize) -> DisplayText {
-    // Replace newlines with a visual indicator for the single display line.
-    let flat: String = input.replace('\n', " | ");
-
-    // Compute cursor offset in the flattened string.
-    // Account for newline -> " | " expansion (1 char -> 3 chars).
-    let mut flat_cursor: usize = 0;
-    for (char_idx, ch) in input.chars().enumerate() {
-        if char_idx == cursor_pos {
-            break;
-        }
-        if ch == '\n' {
-            flat_cursor += 3; // " | " is 3 chars
-        } else {
-            flat_cursor += 1;
-        }
-    }
-
-    // Available display width (1 char margin on the left accounted for by the " " prefix).
-    let avail = width.saturating_sub(1);
-
-    if avail == 0 {
-        return DisplayText {
-            visible: String::new(),
-            cursor_offset: 0,
-        };
-    }
-
-    let flat_chars: Vec<char> = flat.chars().collect();
-    let flat_len = flat_chars.len();
-
-    if flat_len <= avail {
-        DisplayText {
-            visible: flat,
-            cursor_offset: flat_cursor,
-        }
-    } else {
-        // Horizontal scrolling to keep cursor visible.
-        let scroll_start = if flat_cursor < avail {
-            0
-        } else {
-            flat_cursor - avail + 1
-        };
-        let end = (scroll_start + avail).min(flat_len);
-        let visible: String = flat_chars[scroll_start..end].iter().collect();
-        let cursor_offset = flat_cursor - scroll_start;
-
-        DisplayText {
-            visible,
-            cursor_offset,
-        }
     }
 }

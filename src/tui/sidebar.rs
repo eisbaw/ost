@@ -8,6 +8,7 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Paragraph, Widget},
 };
 
+use super::mouse::{HitMap, Target, Viewport};
 use crate::api;
 
 // ---------------------------------------------------------------------------
@@ -55,6 +56,7 @@ pub struct SidebarState {
     pub chats: Vec<Chat>,
     /// Index into the flat item list (0-based)
     pub selected: usize,
+    pub viewport: Viewport,
     /// Whether data is still loading.
     pub loading: bool,
 }
@@ -65,6 +67,7 @@ impl Default for SidebarState {
             teams: Vec::new(),
             chats: Vec::new(),
             selected: 0,
+            viewport: Viewport::default(),
             loading: true,
         }
     }
@@ -187,6 +190,7 @@ impl SidebarState {
 
     /// Move selection up.
     pub fn move_up(&mut self) {
+        self.viewport.follow_selection = true;
         if self.selected > 0 {
             self.selected -= 1;
             self.skip_headers_up();
@@ -195,6 +199,7 @@ impl SidebarState {
 
     /// Move selection down.
     pub fn move_down(&mut self) {
+        self.viewport.follow_selection = true;
         let count = self.item_count();
         if count == 0 {
             return;
@@ -265,7 +270,14 @@ impl SidebarState {
 // ---------------------------------------------------------------------------
 
 /// Render the sidebar into the given area.
-pub fn render(area: Rect, buf: &mut Buffer, state: &SidebarState, focused: bool) {
+pub fn render(
+    area: Rect,
+    buf: &mut Buffer,
+    state: &mut SidebarState,
+    focused: bool,
+    hits: &mut HitMap,
+) {
+    hits.add(area, Target::Sidebar);
     let border_style = if focused {
         Style::default().fg(Color::Yellow)
     } else {
@@ -288,6 +300,7 @@ pub fn render(area: Rect, buf: &mut Buffer, state: &SidebarState, focused: bool)
 
     // Show loading indicator if data hasn't arrived yet.
     if state.loading && state.teams.is_empty() && state.chats.is_empty() {
+        state.viewport.prepare(0, inner.height as usize, 0..0);
         if inner.height > 0 && inner.width > 0 {
             let loading_area = Rect::new(inner.x, inner.y, inner.width, 1);
             let line = Line::from(Span::styled(
@@ -307,7 +320,12 @@ pub fn render(area: Rect, buf: &mut Buffer, state: &SidebarState, focused: bool)
     }
 
     // Compute scroll offset so selected item is visible.
-    let scroll_offset = compute_scroll_offset(state.selected, available_height, items.len());
+    state.viewport.prepare(
+        items.len(),
+        available_height,
+        state.selected..state.selected + 1,
+    );
+    let scroll_offset = state.viewport.offset;
 
     for (row_idx, item_idx) in (scroll_offset..items.len())
         .take(available_height)
@@ -321,20 +339,10 @@ pub fn render(area: Rect, buf: &mut Buffer, state: &SidebarState, focused: bool)
         };
 
         render_item(buf, &ctx, item, state);
+        if !matches!(item, SidebarItem::TeamsHeader | SidebarItem::ChatsHeader) {
+            hits.add(ctx.area, Target::SidebarItem(item_idx));
+        }
     }
-}
-
-/// Simple scroll offset: keep selected item visible.
-fn compute_scroll_offset(selected: usize, height: usize, total: usize) -> usize {
-    if total <= height {
-        return 0;
-    }
-    if selected < height {
-        return 0;
-    }
-    let max_offset = total.saturating_sub(height);
-    let offset = selected.saturating_sub(height - 1);
-    offset.min(max_offset)
 }
 
 /// Rendering context for a single sidebar row.

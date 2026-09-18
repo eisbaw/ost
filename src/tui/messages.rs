@@ -9,6 +9,7 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Paragraph, Widget},
 };
 
+use super::mouse::{HitMap, Target, Viewport};
 use crate::api;
 
 /// Default header shown when no channel is selected.
@@ -59,8 +60,8 @@ pub struct MessagesState {
     pub channel_header: String,
     /// All messages in the channel.
     pub messages: Vec<Message>,
-    /// Vertical scroll offset (in rendered lines, 0 = top).
-    pub scroll_offset: usize,
+    /// Viewport offset in rendered lines, independent of mouse selection.
+    pub viewport: Viewport,
     /// Index of the currently selected message (for highlighting).
     pub selected: usize,
     /// Which message indices have their thread expanded.
@@ -75,7 +76,7 @@ impl Default for MessagesState {
             channel_header: DEFAULT_HEADER.to_string(),
             messages: Vec::new(),
             expanded_threads: Vec::new(),
-            scroll_offset: 0,
+            viewport: Viewport::default(),
             selected: 0,
             loading: false,
         }
@@ -100,7 +101,7 @@ impl MessagesState {
             .collect();
         let count = self.messages.len();
         self.expanded_threads = vec![true; count];
-        self.scroll_offset = 0;
+        self.viewport = Viewport::default();
         // Select the last (newest) message so the view starts at the bottom.
         self.selected = count.saturating_sub(1);
         self.loading = false;
@@ -108,6 +109,7 @@ impl MessagesState {
 
     /// Move selection up by one message.
     pub fn select_previous(&mut self) {
+        self.viewport.follow_selection = true;
         if self.selected > 0 {
             self.selected -= 1;
         }
@@ -115,6 +117,7 @@ impl MessagesState {
 
     /// Move selection down by one message.
     pub fn select_next(&mut self) {
+        self.viewport.follow_selection = true;
         if self.selected + 1 < self.messages.len() {
             self.selected += 1;
         }
@@ -122,7 +125,8 @@ impl MessagesState {
 
     /// Toggle thread expansion for the selected message.
     pub fn toggle_thread(&mut self) {
-        if self.selected < self.expanded_threads.len()
+        if self.selected < self.messages.len()
+            && self.selected < self.expanded_threads.len()
             && !self.messages[self.selected].replies.is_empty()
         {
             self.expanded_threads[self.selected] = !self.expanded_threads[self.selected];
@@ -135,7 +139,15 @@ impl MessagesState {
 // ---------------------------------------------------------------------------
 
 /// Render the messages pane into the given area.
-pub fn render(area: Rect, buf: &mut Buffer, state: &MessagesState, focused: bool, user_name: &str) {
+pub fn render(
+    area: Rect,
+    buf: &mut Buffer,
+    state: &mut MessagesState,
+    focused: bool,
+    user_name: &str,
+    hits: &mut HitMap,
+) {
+    hits.add(area, Target::Messages);
     let border_style = if focused {
         Style::default().fg(Color::Yellow)
     } else {
@@ -157,6 +169,7 @@ pub fn render(area: Rect, buf: &mut Buffer, state: &MessagesState, focused: bool
     block.render(area, buf);
 
     if inner.height == 0 || inner.width == 0 {
+        state.viewport.prepare(0, 0, 0..0);
         return;
     }
 
@@ -173,11 +186,15 @@ pub fn render(area: Rect, buf: &mut Buffer, state: &MessagesState, focused: bool
     );
 
     if messages_area.height == 0 {
+        state.viewport.prepare(0, 0, 0..0);
         return;
     }
 
     // Show loading indicator.
     if state.loading {
+        state
+            .viewport
+            .prepare(0, messages_area.height as usize, 0..0);
         let loading_area = Rect::new(messages_area.x, messages_area.y, messages_area.width, 1);
         let line = Line::from(Span::styled(
             " Loading messages...",
@@ -189,6 +206,9 @@ pub fn render(area: Rect, buf: &mut Buffer, state: &MessagesState, focused: bool
 
     // Show empty state.
     if state.messages.is_empty() {
+        state
+            .viewport
+            .prepare(0, messages_area.height as usize, 0..0);
         let empty_area = Rect::new(messages_area.x, messages_area.y, messages_area.width, 1);
         let text = if state.channel_header == DEFAULT_HEADER {
             " Select a channel or chat to view messages"
@@ -207,13 +227,32 @@ pub fn render(area: Rect, buf: &mut Buffer, state: &MessagesState, focused: bool
     let visible_height = messages_area.height as usize;
 
     // Auto-scroll to keep selected message visible.
-    let scroll = compute_auto_scroll(
-        state.scroll_offset,
-        state.selected,
-        &msg_line_ranges,
-        visible_height,
-        total_lines,
-    );
+    let (start, end) = msg_line_ranges
+        .get(state.selected)
+        .copied()
+        .unwrap_or_default();
+    state
+        .viewport
+        .prepare(total_lines, visible_height, start..end);
+    let scroll = state.viewport.offset;
+
+    // Use the very same line ranges as the renderer, including wrapped replies.
+    // The separating blank line is deliberately not a message click target.
+    for (idx, &(start, end)) in msg_line_ranges.iter().enumerate() {
+        let first = start.max(scroll);
+        let last = end.saturating_sub(1).min(scroll + visible_height);
+        if first < last {
+            hits.add(
+                Rect::new(
+                    messages_area.x,
+                    messages_area.y + (first - scroll) as u16,
+                    messages_area.width,
+                    (last - first) as u16,
+                ),
+                Target::Message(idx),
+            );
+        }
+    }
 
     // Render visible lines.
     for (row, line_idx) in (scroll..total_lines).take(visible_height).enumerate() {
@@ -624,45 +663,4 @@ fn hsv_to_rgb(h: f32, s: f32, v: f32) -> Color {
         ((g1 + m) * 255.0) as u8,
         ((b1 + m) * 255.0) as u8,
     )
-}
-
-/// Compute scroll offset that keeps the selected message visible.
-fn compute_auto_scroll(
-    current_scroll: usize,
-    selected: usize,
-    ranges: &[(usize, usize)],
-    visible_height: usize,
-    total_lines: usize,
-) -> usize {
-    if ranges.is_empty() || total_lines <= visible_height {
-        return 0;
-    }
-
-    let (sel_start, sel_end) = if selected < ranges.len() {
-        ranges[selected]
-    } else {
-        return current_scroll;
-    };
-
-    let mut scroll = current_scroll;
-
-    // If the message is taller than the viewport, always show its start.
-    let msg_height = sel_end.saturating_sub(sel_start);
-    if msg_height >= visible_height {
-        scroll = sel_start;
-    } else {
-        // If selected message starts above the viewport, scroll up to show it.
-        if sel_start < scroll {
-            scroll = sel_start;
-        }
-
-        // If selected message ends below the viewport, scroll down.
-        if sel_end > scroll + visible_height {
-            scroll = sel_end.saturating_sub(visible_height);
-        }
-    }
-
-    // Clamp.
-    let max_scroll = total_lines.saturating_sub(visible_height);
-    scroll.min(max_scroll)
 }

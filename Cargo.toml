@@ -60,6 +60,7 @@ tokio-tungstenite = { version = "0.20", features = ["native-tls"] }
 uuid = { version = "1", features = ["v4"] }
 chrono = "0.4"
 unicode-width = "0.2"
+unicode-segmentation = "1.12"
 
 # Audio I/O (optional — requires ALSA headers on Linux)
 cpal = { version = "0.15", optional = true }

@@ -27,6 +27,7 @@ pub struct DebugLogState {
     pub visible: bool,
     /// Scroll offset (0 = viewing most recent lines at bottom).
     scroll_offset: usize,
+    visible_lines: usize,
 }
 
 impl DebugLogState {
@@ -37,6 +38,7 @@ impl DebugLogState {
             lines: Vec::new(),
             visible: false,
             scroll_offset: 0,
+            visible_lines: 1,
         }
     }
 
@@ -72,7 +74,7 @@ impl DebugLogState {
     ///
     /// Clamps to prevent scrolling past the oldest line.
     pub fn scroll_up(&mut self, n: usize) {
-        let max_offset = self.lines.len().saturating_sub(1);
+        let max_offset = self.lines.len().saturating_sub(self.visible_lines);
         self.scroll_offset = self.scroll_offset.saturating_add(n).min(max_offset);
     }
 
@@ -89,7 +91,7 @@ impl DebugLogState {
 }
 
 /// Render the debug log pane.
-pub fn render(area: Rect, buf: &mut Buffer, state: &DebugLogState) {
+pub fn render(area: Rect, buf: &mut Buffer, state: &mut DebugLogState) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::DarkGray))
@@ -109,6 +111,10 @@ pub fn render(area: Rect, buf: &mut Buffer, state: &DebugLogState) {
 
     let visible_lines = inner.height as usize;
     let total_lines = state.lines.len();
+    state.visible_lines = visible_lines;
+    state.scroll_offset = state
+        .scroll_offset
+        .min(total_lines.saturating_sub(visible_lines));
 
     // Calculate which lines to show.
     // scroll_offset=0 means show the last `visible_lines` lines.

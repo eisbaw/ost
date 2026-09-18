@@ -1,7 +1,13 @@
 //! TUI Application state and main event loop
 
 use anyhow::Result;
-use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::{
+    event::{
+        DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEventKind,
+        KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    },
+    execute,
+};
 use ratatui::DefaultTerminal;
 use tokio_stream::StreamExt;
 
@@ -10,12 +16,13 @@ use super::compose::ComposeState;
 use super::debug_log::DebugLogState;
 use super::log_capture::LogBuffer;
 use super::messages::MessagesState;
+use super::mouse::{is_actionable, HitMap, Target, WHEEL_LINES};
 use super::search::SearchState;
 use super::sidebar::SidebarState;
 use super::ui;
 
 /// Active pane in the TUI
-#[derive(Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
     #[default]
     Sidebar,
@@ -68,6 +75,8 @@ pub struct App {
     pub status_is_error: bool,
     /// Debug log pane state.
     pub debug_log: DebugLogState,
+    /// Hit targets from the most recently rendered frame.
+    pub mouse: HitMap,
 }
 
 impl App {
@@ -90,6 +99,7 @@ impl App {
             status_message: None,
             status_is_error: false,
             debug_log: DebugLogState::new(log_buffer),
+            mouse: HitMap::default(),
         }
     }
 }
@@ -115,6 +125,17 @@ impl App {
 
     /// Handle a crossterm event.
     pub fn handle_event(&mut self, event: Event, backend: &Backend) {
+        match event {
+            Event::Mouse(mouse) => {
+                self.handle_mouse(mouse, backend);
+                return;
+            }
+            Event::Resize(_, _) => {
+                self.mouse.clear();
+                return;
+            }
+            _ => {}
+        }
         if let Event::Key(key_event) = event {
             if key_event.kind != KeyEventKind::Press {
                 return;
@@ -131,7 +152,7 @@ impl App {
 
             // When search overlay is active, route all keys to search handler.
             if self.search.active {
-                self.handle_search_key(key_event);
+                self.handle_search_key(key_event, backend);
                 return;
             }
 
@@ -172,6 +193,91 @@ impl App {
             } else {
                 self.handle_navigation_key(key_event, backend);
             }
+        }
+    }
+
+    fn handle_mouse(&mut self, event: MouseEvent, backend: &Backend) {
+        if !is_actionable(event) {
+            return;
+        }
+        let Some(target) = self.mouse.at(event.column, event.row) else {
+            return;
+        };
+        if self.show_help {
+            if event.kind == MouseEventKind::Down(MouseButton::Left) {
+                self.show_help = false;
+            }
+            return;
+        }
+        if self.search.active {
+            match (event.kind, target) {
+                (MouseEventKind::Down(MouseButton::Left), Target::SearchResult(idx)) => {
+                    self.search.selected = idx;
+                    self.apply_search_selection(backend);
+                }
+                (MouseEventKind::Down(MouseButton::Left), Target::SearchCursor(position)) => {
+                    self.search.cursor_pos = position;
+                }
+                (MouseEventKind::Down(MouseButton::Left), Target::DismissSearch) => {
+                    self.search.deactivate();
+                }
+                (
+                    MouseEventKind::ScrollUp | MouseEventKind::ScrollDown,
+                    Target::Search | Target::SearchCursor(_) | Target::SearchResult(_),
+                ) => {
+                    self.search
+                        .viewport
+                        .scroll(event.kind == MouseEventKind::ScrollUp);
+                }
+                _ => {}
+            }
+            return;
+        }
+        match event.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.status_message = None;
+                match target {
+                    Target::Sidebar | Target::SidebarItem(_) => {
+                        self.active_pane = Pane::Sidebar;
+                        if let Target::SidebarItem(idx) = target {
+                            self.sidebar.selected = idx;
+                            self.sidebar.viewport.follow_selection = false;
+                            self.handle_sidebar_enter(backend);
+                        }
+                    }
+                    Target::Messages | Target::Message(_) => {
+                        if let Target::Message(idx) = target {
+                            // A second click on the selected message toggles its thread.
+                            if self.active_pane == Pane::Messages && self.messages.selected == idx {
+                                self.messages.toggle_thread();
+                            }
+                            self.messages.selected = idx;
+                            self.messages.viewport.follow_selection = false;
+                        }
+                        self.active_pane = Pane::Messages;
+                    }
+                    Target::Compose | Target::ComposeCursor(_) => {
+                        self.active_pane = Pane::Compose;
+                        if let Target::ComposeCursor(position) = target {
+                            self.compose.cursor_pos = position;
+                        }
+                    }
+                    Target::Help => self.show_help = true,
+                    Target::Search => self.search.activate(),
+                    _ => {}
+                }
+            }
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                let up = event.kind == MouseEventKind::ScrollUp;
+                match target {
+                    Target::Sidebar | Target::SidebarItem(_) => self.sidebar.viewport.scroll(up),
+                    Target::Messages | Target::Message(_) => self.messages.viewport.scroll(up),
+                    Target::DebugLog if up => self.debug_log.scroll_up(WHEEL_LINES),
+                    Target::DebugLog => self.debug_log.scroll_down(WHEEL_LINES),
+                    _ => {}
+                }
+            }
+            _ => {}
         }
     }
 
@@ -339,7 +445,7 @@ impl App {
     }
 
     /// Handle key events when the search overlay is active.
-    fn handle_search_key(&mut self, key_event: crossterm::event::KeyEvent) {
+    fn handle_search_key(&mut self, key_event: crossterm::event::KeyEvent, backend: &Backend) {
         let code = key_event.code;
         let modifiers = key_event.modifiers;
 
@@ -358,7 +464,7 @@ impl App {
             }
             // Enter selects the current result.
             (KeyCode::Enter, _) => {
-                self.apply_search_selection();
+                self.apply_search_selection(backend);
             }
             // Backspace deletes character before cursor.
             (KeyCode::Backspace, _) => {
@@ -396,7 +502,7 @@ impl App {
     }
 
     /// Apply the currently selected search result: navigate to the matching item.
-    fn apply_search_selection(&mut self) {
+    fn apply_search_selection(&mut self, backend: &Backend) {
         use super::search::SearchResultKind;
 
         let result = match self.search.selected_result() {
@@ -424,6 +530,8 @@ impl App {
                     }
                 }
                 self.active_pane = Pane::Sidebar;
+                self.sidebar.viewport.follow_selection = true;
+                self.handle_sidebar_enter(backend);
             }
             SearchResultKind::Chat(chat_idx) => {
                 // Select the chat in the sidebar.
@@ -437,11 +545,14 @@ impl App {
                     }
                 }
                 self.active_pane = Pane::Sidebar;
+                self.sidebar.viewport.follow_selection = true;
+                self.handle_sidebar_enter(backend);
             }
             SearchResultKind::Message(msg_idx) => {
                 // Select the message in the messages pane.
                 if msg_idx < self.messages.messages.len() {
                     self.messages.selected = msg_idx;
+                    self.messages.viewport.follow_selection = true;
                 }
                 self.active_pane = Pane::Messages;
             }
@@ -452,6 +563,7 @@ impl App {
 
     /// Handle a response from the async backend.
     fn handle_backend_response(&mut self, response: BackendResponse, backend: &Backend) {
+        self.mouse.clear();
         match response {
             BackendResponse::Teams(Ok(teams)) => {
                 self.sidebar.update_teams(teams);
@@ -554,7 +666,7 @@ impl App {
     }
 
     /// Render the UI
-    pub fn render(&self, frame: &mut ratatui::Frame) {
+    pub fn render(&mut self, frame: &mut ratatui::Frame) {
         ui::render(frame, self);
     }
 }
@@ -564,23 +676,45 @@ impl App {
 /// Sets up a panic hook so the terminal is always restored even on panic.
 /// Requires a LogBuffer for capturing tracing output into the debug log pane.
 pub async fn run(log_buffer: LogBuffer) -> Result<()> {
+    let (mut terminal, _session) = init_terminal()?;
+    run_app(&mut terminal, log_buffer).await
+}
+
+fn init_terminal() -> Result<(DefaultTerminal, TerminalSession)> {
     // Install a panic hook that restores the terminal before printing the panic.
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        ratatui::restore();
+        restore_terminal();
         default_hook(info);
     }));
 
-    let mut terminal = ratatui::init();
-    let res = run_app(&mut terminal, log_buffer).await;
+    let terminal = ratatui::init();
+    let session = TerminalSession;
+    execute!(std::io::stdout(), EnableMouseCapture)?;
+    Ok((terminal, session))
+}
+
+fn restore_terminal() {
+    let _ = execute!(std::io::stdout(), DisableMouseCapture);
     ratatui::restore();
-    res
+}
+
+/// Also restores the terminal if the async session is cancelled or returns an error.
+struct TerminalSession;
+
+impl Drop for TerminalSession {
+    fn drop(&mut self) {
+        restore_terminal();
+    }
 }
 
 async fn run_app(terminal: &mut DefaultTerminal, log_buffer: LogBuffer) -> Result<()> {
     let mut app = App::new(log_buffer);
     let mut backend = Backend::start();
-    let mut events = EventStream::new();
+    let mut events = EventStream::new().filter(|event| match event {
+        Ok(Event::Mouse(mouse)) => is_actionable(*mouse),
+        _ => true,
+    });
 
     // Fire initial data loads.
     backend.send(BackendCommand::LoadTeams);
@@ -624,3 +758,7 @@ async fn run_app(terminal: &mut DefaultTerminal, log_buffer: LogBuffer) -> Resul
 
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "mouse_tests.rs"]
+mod mouse_tests;

@@ -2,7 +2,7 @@
 //!
 //! Teams compresses SDP blobs using raw DEFLATE (zlib windowBits=-15) with a
 //! preset dictionary, then base64-encodes the result. The dictionary is a
-//! 20623-byte string extracted from libSkyLib.so containing representative SDP
+//! dictionary extracted from libSkyLib.so containing representative SDP
 //! content that deflate uses for better compression ratios.
 //!
 //! Wire format: `base64(raw_deflate(sdp_text, dictionary))`
@@ -14,9 +14,9 @@ use base64::Engine;
 use flate2::{Compress, Decompress, FlushCompress, FlushDecompress, Status};
 
 /// SDP compression dictionary extracted from libSkyLib.so at offset 0x1ff6d4.
-/// This 20623-byte string contains representative SDP/HTTP content that the
+/// This dictionary contains representative SDP/HTTP content that the
 /// deflate algorithm uses as a preset dictionary for better compression.
-const SDP_DICTIONARY: &[u8; 20623] = include_bytes!("sdp_dictionary.bin");
+const SDP_DICTIONARY: &[u8] = include_bytes!("sdp_dictionary.bin");
 
 /// Minimum SDP size for compression (from binary analysis at 0x009adaf0).
 const COMPRESSION_THRESHOLD: usize = 1201;
@@ -49,7 +49,7 @@ pub fn decompress_sdp(blob: &str) -> Result<String> {
     }
 
     // Try with the preset dictionary
-    match raw_inflate(&raw, Some(SDP_DICTIONARY.as_slice())) {
+    match raw_inflate(&raw, Some(SDP_DICTIONARY)) {
         Ok(sdp) if sdp.starts_with("v=") => return Ok(sdp),
         Ok(sdp) => anyhow::bail!(
             "Decompressed data does not look like SDP (starts with {:?})",
@@ -68,7 +68,7 @@ pub fn compress_sdp(sdp: &str) -> Result<Option<String>> {
         return Ok(None);
     }
 
-    let compressed = raw_deflate(sdp.as_bytes(), Some(SDP_DICTIONARY.as_slice()))?;
+    let compressed = raw_deflate(sdp.as_bytes(), Some(SDP_DICTIONARY))?;
     let encoded = base64::engine::general_purpose::STANDARD.encode(&compressed);
     Ok(Some(encoded))
 }
