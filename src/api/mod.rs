@@ -4,6 +4,7 @@ mod chat;
 pub mod client;
 mod graph;
 mod me;
+mod notes;
 mod presence;
 mod teams;
 
@@ -12,6 +13,9 @@ use anyhow::Result;
 // Re-export data types for TUI integration
 pub use chat::{ChatInfo, MessageInfo};
 pub use me::UserInfo;
+// Re-exported for future TUI callers; unused by the CLI today.
+#[allow(unused_imports)]
+pub use notes::{NotePage, NotebookInfo, PageInfo, SectionInfo};
 pub use presence::PresenceInfo;
 pub use teams::TeamInfo;
 
@@ -23,6 +27,11 @@ pub use teams::ChannelInfo;
 // Re-export data-returning functions for TUI integration
 pub use chat::{list_chats_data, read_messages_data, send_message_with_client};
 pub use me::whoami_data;
+#[allow(unused_imports)]
+pub use notes::{
+    append_note_paragraph_data, list_notebook_sections_data, list_notebooks_data,
+    read_note_page_data,
+};
 pub use presence::get_presence_data;
 pub use teams::list_teams_data;
 
@@ -59,4 +68,14 @@ pub async fn whoami() -> Result<()> {
 /// List joined teams and their channels
 pub async fn list_teams() -> Result<()> {
     teams::list_teams().await
+}
+
+/// OneNote notebooks/sections/pages (read; `--append` edits a page)
+pub async fn notes(
+    group_id: Option<&str>,
+    notebook: Option<&str>,
+    page: Option<&str>,
+    append: Option<&str>,
+) -> Result<()> {
+    notes::notes(group_id, notebook, page, append).await
 }
