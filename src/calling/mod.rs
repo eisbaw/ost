@@ -12,6 +12,7 @@ pub mod codec;
 #[cfg(feature = "video-capture")]
 pub mod display;
 pub mod ice;
+pub mod macav;
 pub mod media;
 pub mod recording;
 pub mod rtcp;
