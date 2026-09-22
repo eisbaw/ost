@@ -238,7 +238,9 @@ async fn handle_frame(frame: &str, http: &reqwest::Client, skype_token: &str) {
             println!("{} Event: {}", prefix, json_str);
 
             // If this is a call event, try to parse and auto-answer.
-            if is_call {
+            // TEAMS_MANUAL_CALLS=1 skips auto-answer so an embedding UI
+            // (or a debugging human) can take accept/end itself.
+            if is_call && std::env::var_os("TEAMS_MANUAL_CALLS").is_none() {
                 handle_call_event(json_str, http, skype_token).await;
             }
         } else {

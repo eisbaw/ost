@@ -182,9 +182,12 @@ pub async fn add_recorder_bot(
         "Recorder bot response (first 2000): {}",
         &body[..body.len().min(2000)]
     );
-    // Dump full response for protocol analysis
-    if let Ok(()) = std::fs::write("/tmp/add_recorder_response.json", &body) {
-        tracing::info!("Full add-recorder response saved to /tmp/add_recorder_response.json");
+    // Dump full response for protocol analysis (opt-in: embedders
+    // must not write outside their own scratch; CLI sets TEAMS_DEBUG_DUMP=1).
+    if std::env::var_os("TEAMS_DEBUG_DUMP").is_some() {
+        if let Ok(()) = std::fs::write("/tmp/add_recorder_response.json", &body) {
+            tracing::info!("Full add-recorder response saved to /tmp/add_recorder_response.json");
+        }
     }
     Ok(body)
 }
