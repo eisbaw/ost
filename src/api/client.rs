@@ -206,6 +206,46 @@ impl TeamsClient {
         check_response(resp, url).await
     }
 
+    /// Raw-bytes GET for inline chat media (om-richmedia). Microsoft media
+    /// hosts (see `media::needs_auth`) attach the Skype token; public hosts
+    /// fetch without auth so the token never leaks to third parties.
+    /// Rejects over-cap payloads (never truncated).
+    pub async fn media_get(&self, url: &str) -> Result<super::media::MediaBytes> {
+        let mut req = self.http.get(url);
+        if super::media::needs_auth(url) {
+            let token = self.skype_token()?;
+            req = req
+                .header("Authentication", format!("skypetoken={}", token))
+                .header("X-SkypeToken", &token);
+        }
+        tracing::debug!("Media GET {}", url);
+        let resp = req
+            .send()
+            .await
+            .with_context(|| format!("Media GET {} failed", url))?;
+        let resp = check_response(resp, url).await?;
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(String::from);
+        let bytes = resp
+            .bytes()
+            .await
+            .with_context(|| format!("Media GET {} body failed", url))?;
+        if bytes.len() > super::media::MAX_BYTES {
+            anyhow::bail!(
+                "Media {} exceeds {} bytes",
+                url,
+                super::media::MAX_BYTES
+            );
+        }
+        Ok(super::media::MediaBytes {
+            data: bytes.to_vec(),
+            content_type,
+        })
+    }
+
     /// POST using `Authentication: skypetoken=...` header (native chat API).
     pub async fn chat_post(
         &self,
