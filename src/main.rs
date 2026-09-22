@@ -84,6 +84,31 @@ enum Commands {
         set: Option<String>,
     },
 
+    /// Microsoft To Do lists and tasks (Graph /me/todo).
+    /// Bare: show lists. --list <id>: tasks in that list.
+    /// --add <title> --to <id>: create. --done <task> --to <id>: complete.
+    Todo {
+        /// Show tasks for this list id (default: show lists)
+        #[arg(long)]
+        list: Option<String>,
+
+        /// Maximum tasks to show
+        #[arg(short, long, default_value = "50")]
+        limit: usize,
+
+        /// Create a task with this title (requires --to)
+        #[arg(long)]
+        add: Option<String>,
+
+        /// Target list id for --add / --done
+        #[arg(long)]
+        to: Option<String>,
+
+        /// Complete this task id (requires --to)
+        #[arg(long)]
+        done: Option<String>,
+    },
+
     /// Place a test call to yourself (self-call)
     CallTest {
         /// Duration in seconds to keep the call active
@@ -227,6 +252,31 @@ async fn main() -> Result<()> {
                 api::get_presence().await?;
             }
         },
+        Commands::Todo {
+            list,
+            limit,
+            add,
+            to,
+            done,
+        } => {
+            if let Some(title) = add {
+                let Some(list_id) = to else {
+                    anyhow::bail!("--add requires --to <list-id>");
+                };
+                tracing::info!("Creating To Do task...");
+                api::create_todo_task(&list_id, &title).await?;
+            } else if let Some(task_id) = done {
+                let Some(list_id) = to else {
+                    anyhow::bail!("--done requires --to <list-id>");
+                };
+                tracing::info!("Completing To Do task...");
+                api::complete_todo_task(&list_id, &task_id).await?;
+            } else if let Some(list_id) = list {
+                api::list_todo_tasks(&list_id, limit).await?;
+            } else {
+                api::list_todo_lists().await?;
+            }
+        }
         // TUI is handled above with early return.
         Commands::Tui => unreachable!(),
     }
