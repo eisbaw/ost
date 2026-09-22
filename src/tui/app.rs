@@ -588,6 +588,11 @@ async fn run_app(terminal: &mut DefaultTerminal, log_buffer: LogBuffer) -> Resul
     backend.send(BackendCommand::LoadUserInfo);
     backend.send(BackendCommand::LoadPresence);
 
+    // OstMac patch: without sign-in the backend task exits and its channel
+    // closes; upstream treats that as quit (exit 0, no UI). Stay open so the
+    // layout + auth error remain visible and navigable.
+    let mut backend_alive = true;
+
     while !app.should_exit {
         // Drain log buffer before rendering to keep it from growing unbounded.
         app.debug_log.refresh();
@@ -608,14 +613,15 @@ async fn run_app(terminal: &mut DefaultTerminal, log_buffer: LogBuffer) -> Resul
                     }
                 }
             }
-            maybe_response = backend.recv() => {
+            maybe_response = backend.recv(), if backend_alive => {
                 match maybe_response {
                     Some(response) => {
                         app.handle_backend_response(response, &backend);
                     }
                     None => {
-                        // Backend channel closed.
-                        break;
+                        // OstMac: backend gone (e.g. unsigned) — keep UI alive.
+                        backend_alive = false;
+                        app.connection_state = "Not authenticated".to_string();
                     }
                 }
             }
