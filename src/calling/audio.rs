@@ -8,7 +8,9 @@
 //! public types are not compiled and media.rs falls back to silence mode.
 
 use std::sync::mpsc;
+use std::sync::OnceLock;
 use std::thread;
+use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, SampleFormat, SampleRate, StreamConfig};
@@ -18,6 +20,36 @@ const FRAME_SAMPLES: usize = 160;
 
 /// Target sample rate for PCMU.
 const TARGET_RATE: u32 = 8000;
+
+// ---------------------------------------------------------------------------
+// Audio setup lock: every CoreAudio AudioUnit touch (config probe, stream
+// build/teardown) serializes here. Observed: concurrent probes against a
+// virtual driver (BoomAudio) wedge in a HAL mutex and never return —
+// single-threaded the same calls complete. All acquisition is bounded,
+// so a wedged HAL degrades to None/empty (caller retries) instead of a
+// stuck thread.
+// ---------------------------------------------------------------------------
+
+fn audio_setup() -> &'static std::sync::Mutex<()> {
+    static S: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
+    S.get_or_init(|| std::sync::Mutex::new(()))
+}
+
+/// Acquire the setup lock, waiting at most `budget`. None on timeout.
+fn lock_audio_for(budget: Duration) -> Option<std::sync::MutexGuard<'static, ()>> {
+    let start = Instant::now();
+    loop {
+        match audio_setup().try_lock() {
+            Ok(g) => return Some(g),
+            Err(std::sync::TryLockError::Poisoned(e)) => return Some(e.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => {}
+        }
+        if start.elapsed() >= budget {
+            return None;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Resampling helpers (public for testing)
@@ -69,6 +101,21 @@ impl AudioCapture {
     /// The returned `Receiver` yields `Vec<i16>` frames of approximately 160
     /// samples (20ms at 8000 Hz).
     pub fn start() -> Option<(Self, mpsc::Receiver<Vec<i16>>)> {
+        Self::start_on(None)
+    }
+
+    /// Open the named input device (`None`/empty = system default).
+    /// Returns `None` when the named device does not exist.
+    pub fn start_on(name: Option<&str>) -> Option<(Self, mpsc::Receiver<Vec<i16>>)> {
+        // Resolve before spawning: unknown names and headless fail fast
+        // without parking a thread on the setup lock.
+        let device = match resolve_device(true, name) {
+            Some(d) => d,
+            None => {
+                tracing::warn!("No audio input device found — mic capture disabled");
+                return None;
+            }
+        };
         let (frame_tx, frame_rx) = mpsc::sync_channel::<Vec<i16>>(50);
         // Channel to keep the stream-owning thread alive; dropping sender kills it.
         let (keep_tx, keep_rx) = mpsc::channel::<()>();
@@ -77,82 +124,12 @@ impl AudioCapture {
         let started2 = started.clone();
 
         thread::spawn(move || {
-            let host = cpal::default_host();
-            let device = match host.default_input_device() {
-                Some(d) => d,
-                None => {
-                    tracing::warn!("No audio input device found — mic capture disabled");
-                    return;
-                }
-            };
-
-            let dev_name = device.name().unwrap_or_else(|_| "unknown".into());
-            tracing::info!("Audio input device: {}", dev_name);
-
-            let (config, device_rate) = match pick_config(&device, true) {
-                Some(c) => c,
-                None => {
-                    tracing::warn!("Cannot find suitable input config for {}", dev_name);
-                    return;
-                }
-            };
-
-            let frame_device_samples = (device_rate as usize * 20) / 1000;
-            let need_resample = device_rate != TARGET_RATE;
-
-            let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::<i16>::with_capacity(
-                frame_device_samples * 2,
-            )));
-            let buf2 = buf.clone();
-
-            let stream = match device.build_input_stream(
-                &config,
-                move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                    let mut acc = buf2.lock().unwrap();
-                    acc.extend_from_slice(data);
-                    while acc.len() >= frame_device_samples {
-                        let chunk: Vec<i16> = acc.drain(..frame_device_samples).collect();
-                        let frame = if need_resample {
-                            resample(&chunk, device_rate, TARGET_RATE)
-                        } else {
-                            chunk
-                        };
-                        let _ = frame_tx.try_send(frame);
-                    }
-                },
-                move |err| {
-                    tracing::warn!("Audio input stream error: {}", err);
-                },
-                None,
-            ) {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::warn!("Failed to build audio input stream: {}", e);
-                    return;
-                }
-            };
-
-            if let Err(e) = stream.play() {
-                tracing::warn!("Failed to start audio input stream: {}", e);
-                return;
-            }
-
-            tracing::info!(
-                "Audio capture started (device {}Hz, target {}Hz)",
-                device_rate,
-                TARGET_RATE
-            );
-            started2.store(true, std::sync::atomic::Ordering::SeqCst);
-
-            // Park this thread; the stream stays alive until keep_rx is dropped.
-            let _ = keep_rx.recv();
-            drop(stream);
+            Self::run_on(device, frame_tx, keep_rx, started2);
         });
 
-        // Give the thread a moment to initialize.
-        thread::sleep(std::time::Duration::from_millis(100));
-
-        if started.load(std::sync::atomic::Ordering::SeqCst) {
+        // Poll for setup (replaces the fixed 100ms sleep: slow devices no
+        // longer read as missing, wedged ones time out instead of hanging).
+        if poll_started(&started, Duration::from_secs(10)) {
             Some((
                 AudioCapture {
                     _keep_alive: keep_tx,
@@ -161,6 +138,91 @@ impl AudioCapture {
             ))
         } else {
             None
+        }
+    }
+
+    /// Stream setup + park on the owning thread. All AudioUnit work runs
+    /// under the setup lock; every wait is bounded.
+    fn run_on(
+        device: Device,
+        frame_tx: mpsc::SyncSender<Vec<i16>>,
+        keep_rx: mpsc::Receiver<()>,
+        started: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        let guard = match lock_audio_for(Duration::from_secs(8)) {
+            Some(g) => g,
+            None => {
+                tracing::warn!("Audio input setup timed out waiting for the setup lock");
+                return;
+            }
+        };
+
+        let dev_name = device.name().unwrap_or_else(|_| "unknown".into());
+        tracing::info!("Audio input device: {}", dev_name);
+
+        let (config, device_rate) = match pick_config(&device, true) {
+            Some(c) => c,
+            None => {
+                tracing::warn!("Cannot find suitable input config for {}", dev_name);
+                return;
+            }
+        };
+
+        let frame_device_samples = (device_rate as usize * 20) / 1000;
+        let need_resample = device_rate != TARGET_RATE;
+
+        let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::<i16>::with_capacity(
+            frame_device_samples * 2,
+        )));
+        let buf2 = buf.clone();
+
+        let stream = match device.build_input_stream(
+            &config,
+            move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                let mut acc = buf2.lock().unwrap();
+                acc.extend_from_slice(data);
+                while acc.len() >= frame_device_samples {
+                    let chunk: Vec<i16> = acc.drain(..frame_device_samples).collect();
+                    let frame = if need_resample {
+                        resample(&chunk, device_rate, TARGET_RATE)
+                    } else {
+                        chunk
+                    };
+                    let _ = frame_tx.try_send(frame);
+                }
+            },
+            move |err| {
+                tracing::warn!("Audio input stream error: {}", err);
+            },
+            None,
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("Failed to build audio input stream: {}", e);
+                return;
+            }
+        };
+
+        if let Err(e) = stream.play() {
+            tracing::warn!("Failed to start audio input stream: {}", e);
+            return;
+        }
+
+        tracing::info!(
+            "Audio capture started (device {}Hz, target {}Hz)",
+            device_rate,
+            TARGET_RATE
+        );
+        started.store(true, std::sync::atomic::Ordering::SeqCst);
+        drop(guard);
+
+        // Park this thread; the stream stays alive until keep_rx is dropped.
+        let _ = keep_rx.recv();
+        // Teardown serializes too (bounded; on timeout the unit leaks
+        // rather than wedging the next setup behind it).
+        if lock_audio_for(Duration::from_secs(8)).is_none() {
+            tracing::warn!("Audio input teardown timed out; leaking the stream");
+            std::mem::forget(stream);
         }
     }
 }
@@ -184,6 +246,21 @@ impl AudioPlayback {
     /// Send `Vec<i16>` frames of 160 samples (20ms at 8000 Hz) into the
     /// returned `SyncSender`.
     pub fn start() -> Option<(Self, mpsc::SyncSender<Vec<i16>>)> {
+        Self::start_on(None)
+    }
+
+    /// Open the named output device (`None`/empty = system default).
+    /// Returns `None` when the named device does not exist.
+    pub fn start_on(name: Option<&str>) -> Option<(Self, mpsc::SyncSender<Vec<i16>>)> {
+        // Resolve before spawning: unknown names and headless fail fast
+        // without parking a thread on the setup lock.
+        let device = match resolve_device(false, name) {
+            Some(d) => d,
+            None => {
+                tracing::warn!("No audio output device found — speaker playback disabled");
+                return None;
+            }
+        };
         let (frame_tx, frame_rx) = mpsc::sync_channel::<Vec<i16>>(50);
         let (keep_tx, keep_rx) = mpsc::channel::<()>();
 
@@ -191,90 +268,10 @@ impl AudioPlayback {
         let started2 = started.clone();
 
         thread::spawn(move || {
-            let host = cpal::default_host();
-            let device = match host.default_output_device() {
-                Some(d) => d,
-                None => {
-                    tracing::warn!("No audio output device found — speaker playback disabled");
-                    return;
-                }
-            };
-
-            let dev_name = device.name().unwrap_or_else(|_| "unknown".into());
-            tracing::info!("Audio output device: {}", dev_name);
-
-            let (config, device_rate) = match pick_config(&device, false) {
-                Some(c) => c,
-                None => {
-                    tracing::warn!("Cannot find suitable output config for {}", dev_name);
-                    return;
-                }
-            };
-
-            let need_resample = device_rate != TARGET_RATE;
-
-            // Ring buffer fed by a feeder thread, drained by the output callback.
-            let ring = std::sync::Arc::new(std::sync::Mutex::new(
-                std::collections::VecDeque::<i16>::with_capacity(
-                    (device_rate as usize / 1000) * 200,
-                ),
-            ));
-            let ring2 = ring.clone();
-
-            // Feeder thread: reads frames from channel, resamples, pushes to ring.
-            thread::spawn(move || {
-                while let Ok(frame) = frame_rx.recv() {
-                    let samples = if need_resample {
-                        resample(&frame, TARGET_RATE, device_rate)
-                    } else {
-                        frame
-                    };
-                    let mut r = ring2.lock().unwrap();
-                    r.extend(samples.iter());
-                }
-            });
-
-            let stream = match device.build_output_stream(
-                &config,
-                move |data: &mut [i16], _: &cpal::OutputCallbackInfo| {
-                    let mut r = ring.lock().unwrap();
-                    for sample in data.iter_mut() {
-                        *sample = r.pop_front().unwrap_or(0);
-                    }
-                },
-                move |err| {
-                    tracing::warn!("Audio output stream error: {}", err);
-                },
-                None,
-            ) {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::warn!("Failed to build audio output stream: {}", e);
-                    return;
-                }
-            };
-
-            if let Err(e) = stream.play() {
-                tracing::warn!("Failed to start audio output stream: {}", e);
-                return;
-            }
-
-            tracing::info!(
-                "Audio playback started (device {}Hz {}ch, target {}Hz mono)",
-                device_rate,
-                config.channels,
-                TARGET_RATE
-            );
-            started2.store(true, std::sync::atomic::Ordering::SeqCst);
-
-            // Park thread; stream stays alive until keep_rx is dropped.
-            let _ = keep_rx.recv();
-            drop(stream);
+            Self::run_on(device, frame_rx, keep_rx, started2);
         });
 
-        thread::sleep(std::time::Duration::from_millis(100));
-
-        if started.load(std::sync::atomic::Ordering::SeqCst) {
+        if poll_started(&started, Duration::from_secs(10)) {
             Some((
                 AudioPlayback {
                     _keep_alive: keep_tx,
@@ -284,6 +281,191 @@ impl AudioPlayback {
         } else {
             None
         }
+    }
+
+    /// Stream setup + park on the owning thread. All AudioUnit work runs
+    /// under the setup lock; every wait is bounded.
+    fn run_on(
+        device: Device,
+        frame_rx: mpsc::Receiver<Vec<i16>>,
+        keep_rx: mpsc::Receiver<()>,
+        started: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        let guard = match lock_audio_for(Duration::from_secs(8)) {
+            Some(g) => g,
+            None => {
+                tracing::warn!("Audio output setup timed out waiting for the setup lock");
+                return;
+            }
+        };
+
+        let dev_name = device.name().unwrap_or_else(|_| "unknown".into());
+        tracing::info!("Audio output device: {}", dev_name);
+
+        let (config, device_rate) = match pick_config(&device, false) {
+            Some(c) => c,
+            None => {
+                tracing::warn!("Cannot find suitable output config for {}", dev_name);
+                return;
+            }
+        };
+
+        let need_resample = device_rate != TARGET_RATE;
+
+        // Ring buffer fed by a feeder thread, drained by the output callback.
+        let ring = std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::VecDeque::<i16>::with_capacity(
+                (device_rate as usize / 1000) * 200,
+            ),
+        ));
+        let ring2 = ring.clone();
+
+        // Feeder thread: reads frames from channel, resamples, pushes to ring.
+        thread::spawn(move || {
+            while let Ok(frame) = frame_rx.recv() {
+                let samples = if need_resample {
+                    resample(&frame, TARGET_RATE, device_rate)
+                } else {
+                    frame
+                };
+                let mut r = ring2.lock().unwrap();
+                r.extend(samples.iter());
+            }
+        });
+
+        let stream = match device.build_output_stream(
+            &config,
+            move |data: &mut [i16], _: &cpal::OutputCallbackInfo| {
+                let mut r = ring.lock().unwrap();
+                for sample in data.iter_mut() {
+                    *sample = r.pop_front().unwrap_or(0);
+                }
+            },
+            move |err| {
+                tracing::warn!("Audio output stream error: {}", err);
+            },
+            None,
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("Failed to build audio output stream: {}", e);
+                return;
+            }
+        };
+
+        if let Err(e) = stream.play() {
+            tracing::warn!("Failed to start audio output stream: {}", e);
+            return;
+        }
+
+        tracing::info!(
+            "Audio playback started (device {}Hz {}ch, target {}Hz mono)",
+            device_rate,
+            config.channels,
+            TARGET_RATE
+        );
+        started.store(true, std::sync::atomic::Ordering::SeqCst);
+        drop(guard);
+
+        // Park thread; stream stays alive until keep_rx is dropped.
+        let _ = keep_rx.recv();
+        // Teardown serializes too (bounded; on timeout the unit leaks
+        // rather than wedging the next setup behind it).
+        if lock_audio_for(Duration::from_secs(8)).is_none() {
+            tracing::warn!("Audio output teardown timed out; leaking the stream");
+            std::mem::forget(stream);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Device enumeration + named selection (display names for UI pickers)
+// ---------------------------------------------------------------------------
+
+/// Display names of available input devices (empty on headless).
+pub fn input_device_names() -> Vec<String> {
+    device_names(true)
+}
+
+/// Display names of available output devices (empty on headless).
+pub fn output_device_names() -> Vec<String> {
+    device_names(false)
+}
+
+fn device_names(input: bool) -> Vec<String> {
+    // Enumeration probes every device's configs (AudioUnit work) — under
+    // the lock, bounded; a wedged HAL yields an empty list (caller rescans).
+    let _guard = match lock_audio_for(Duration::from_secs(15)) {
+        Some(g) => g,
+        None => {
+            tracing::warn!("Audio enumeration timed out waiting for the setup lock");
+            return vec![];
+        }
+    };
+    let host = cpal::default_host();
+    let iter = if input {
+        host.input_devices()
+    } else {
+        host.output_devices()
+    };
+    match iter {
+        Ok(devs) => devs.filter_map(|d| d.name().ok()).collect(),
+        Err(_) => vec![],
+    }
+}
+
+/// Resolve an input/output device on the calling thread (under the setup
+/// lock, bounded). Unknown names and headless return None fast.
+fn resolve_device(input: bool, name: Option<&str>) -> Option<Device> {
+    let _guard = lock_audio_for(Duration::from_secs(8))?;
+    let host = cpal::default_host();
+    pick_device(&host, input, name)
+}
+
+/// Poll a setup flag until set or `budget` elapses. Replaces fixed sleeps.
+fn poll_started(flag: &std::sync::atomic::AtomicBool, budget: Duration) -> bool {
+    let start = Instant::now();
+    while start.elapsed() < budget {
+        if flag.load(std::sync::atomic::Ordering::SeqCst) {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+    flag.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// System default input device name (None on headless).
+pub fn default_input_name() -> Option<String> {
+    let _guard = lock_audio_for(Duration::from_secs(8))?;
+    cpal::default_host()
+        .default_input_device()
+        .and_then(|d| d.name().ok())
+}
+
+/// System default output device name (None on headless).
+pub fn default_output_name() -> Option<String> {
+    let _guard = lock_audio_for(Duration::from_secs(8))?;
+    cpal::default_host()
+        .default_output_device()
+        .and_then(|d| d.name().ok())
+}
+
+/// Resolve a device: exact name match, or the system default when
+/// `want` is None/empty. Unknown names return None (never fall back —
+/// a stale pick must surface, not silently reroute).
+fn pick_device(host: &cpal::Host, input: bool, want: Option<&str>) -> Option<Device> {
+    if let Some(name) = want.filter(|n| !n.is_empty()) {
+        let iter = if input {
+            host.input_devices()
+        } else {
+            host.output_devices()
+        };
+        return iter.ok()?.find(|d| d.name().is_ok_and(|n| n == name));
+    }
+    if input {
+        host.default_input_device()
+    } else {
+        host.default_output_device()
     }
 }
 
@@ -348,35 +530,62 @@ fn pick_config(device: &Device, input: bool) -> Option<(StreamConfig, u32)> {
 }
 
 // ---------------------------------------------------------------------------
-// mic_test — capture 3 seconds, then play back
+// mic_test — capture N seconds, then play back
 // ---------------------------------------------------------------------------
 
-/// Capture 3 seconds of microphone audio, then play it back through the speaker.
+/// Fast device availability probe (no capture). Opens + closes each device.
+pub fn audio_probe() -> (bool, bool) {
+    let input = AudioCapture::start().is_some();
+    let output = AudioPlayback::start().is_some();
+    (input, output)
+}
+
+/// Summary of a mic capture + playback run (FFI-friendly).
+#[derive(Debug)]
+pub struct MicTestReport {
+    pub frames: usize,
+    pub seconds: f64,
+    pub peak_db: f64,
+    pub played_back: bool,
+}
+
+/// Capture `seconds` of microphone audio, then play it back.
 ///
-/// Prints a VU meter bar every 100ms during capture so you can see the level.
-pub fn mic_test() -> anyhow::Result<()> {
+/// When `vu` is true, prints a VU meter bar every 100ms during capture.
+/// Returns a report (empty-input error if no mic, playback skipped if no
+/// speaker — `played_back` tells which happened).
+pub fn mic_test_report(seconds: u64, vu: bool) -> anyhow::Result<MicTestReport> {
+    mic_test_report_on(seconds, vu, None, None)
+}
+
+/// Named-device variant: `input`/`output` are display names from
+/// `input_device_names`/`output_device_names` (None/empty = default).
+/// Unknown names error — never silently rerouted.
+pub fn mic_test_report_on(
+    seconds: u64,
+    vu: bool,
+    input: Option<&str>,
+    output: Option<&str>,
+) -> anyhow::Result<MicTestReport> {
     use anyhow::bail;
 
-    println!("=== Microphone Test ===");
-    println!("Recording for 3 seconds — speak now!\n");
-
-    let (capture, mic_rx) = match AudioCapture::start() {
+    let seconds = seconds.clamp(1, 10);
+    let (capture, mic_rx) = match AudioCapture::start_on(input) {
         Some(c) => c,
-        None => bail!("No audio input device found"),
+        None => bail!(named_device_error("input", input)),
     };
 
-    // Capture 3 seconds of 160-sample frames (50 frames/sec * 3 = 150 frames)
-    let mut frames: Vec<Vec<i16>> = Vec::with_capacity(150);
+    let mut frames: Vec<Vec<i16>> = Vec::with_capacity(seconds as usize * 50);
     let start = std::time::Instant::now();
     let mut last_vu = start;
+    let mut peak_db = -60.0f64;
 
-    while start.elapsed() < std::time::Duration::from_secs(3) {
+    while start.elapsed() < std::time::Duration::from_secs(seconds) {
         match mic_rx.recv_timeout(std::time::Duration::from_millis(25)) {
             Ok(frame) => {
-                // VU meter: compute RMS level
-                if last_vu.elapsed() >= std::time::Duration::from_millis(100) {
-                    let rms = rms_level(&frame);
-                    let db = if rms > 0.0 { 20.0 * rms.log10() } else { -60.0 };
+                let db = frame_db(&frame);
+                peak_db = peak_db.max(db);
+                if vu && last_vu.elapsed() >= std::time::Duration::from_millis(100) {
                     let bar_len = ((db + 60.0) / 60.0 * 30.0).clamp(0.0, 30.0) as usize;
                     let bar: String = "█".repeat(bar_len) + &"░".repeat(30 - bar_len);
                     print!("\r  [{bar}] {db:5.1} dBFS ");
@@ -390,29 +599,115 @@ pub fn mic_test() -> anyhow::Result<()> {
         }
     }
     drop(capture);
-    println!(
-        "\n\nCaptured {} frames ({:.1}s)",
-        frames.len(),
-        frames.len() as f64 * 0.02
-    );
+    let captured_secs = frames.len() as f64 * 0.02;
 
-    // Play back
-    println!("Playing back...\n");
-    let (playback, speaker_tx) = match AudioPlayback::start() {
-        Some(p) => p,
-        None => bail!("No audio output device found"),
+    let played_back = match AudioPlayback::start_on(output) {
+        Some((playback, speaker_tx)) => {
+            for frame in &frames {
+                let _ = speaker_tx.send(frame.clone());
+                thread::sleep(std::time::Duration::from_millis(20));
+            }
+            thread::sleep(std::time::Duration::from_millis(200));
+            drop(playback);
+            true
+        }
+        None => false,
     };
 
-    for frame in &frames {
-        let _ = speaker_tx.send(frame.clone());
-        thread::sleep(std::time::Duration::from_millis(20));
-    }
-    // Drain: let playback finish
-    thread::sleep(std::time::Duration::from_millis(200));
-    drop(playback);
+    Ok(MicTestReport {
+        frames: frames.len(),
+        seconds: captured_secs,
+        peak_db,
+        played_back,
+    })
+}
 
+/// Capture 3 seconds of microphone audio, then play it back through the speaker.
+///
+/// Prints a VU meter bar every 100ms during capture so you can see the level.
+pub fn mic_test() -> anyhow::Result<()> {
+    println!("=== Microphone Test ===");
+    println!("Recording for 3 seconds — speak now!\n");
+
+    let report = mic_test_report(3, true)?;
+
+    println!(
+        "\n\nCaptured {} frames ({:.1}s, peak {:.1} dBFS)",
+        report.frames, report.seconds, report.peak_db
+    );
+    if report.played_back {
+        println!("Played back.");
+    } else {
+        println!("No audio output device — playback skipped.");
+    }
     println!("Done.");
     Ok(())
+}
+
+/// Play a 1kHz test tone through the speaker for `msecs` milliseconds.
+///
+/// Returns the number of 20ms frames sent.
+pub fn play_tone(msecs: u64) -> anyhow::Result<u32> {
+    play_tone_on(msecs, None)
+}
+
+/// Named-device variant of `play_tone` (None/empty = default output).
+pub fn play_tone_on(msecs: u64, output: Option<&str>) -> anyhow::Result<u32> {
+    use anyhow::bail;
+
+    let msecs = msecs.clamp(100, 10_000);
+    let (playback, speaker_tx) = match AudioPlayback::start_on(output) {
+        Some(p) => p,
+        None => bail!(named_device_error("output", output)),
+    };
+
+    let mut gen = super::test_tone::ToneGenerator::new();
+    let n_frames = (msecs / 20).max(1);
+    for _ in 0..n_frames {
+        let frame = gen.next_frame();
+        if speaker_tx.send(frame).is_err() {
+            break;
+        }
+        thread::sleep(std::time::Duration::from_millis(20));
+    }
+    thread::sleep(std::time::Duration::from_millis(200));
+    drop(playback);
+    Ok(n_frames as u32)
+}
+
+/// Error text distinguishing "no hardware" from "stale device pick".
+fn named_device_error(kind: &str, want: Option<&str>) -> String {
+    match want.filter(|n| !n.is_empty()) {
+        Some(name) => format!("Unknown audio {} device: {}", kind, name),
+        None => format!("No audio {} device found", kind),
+    }
+}
+
+/// Peak level of one frame in dBFS (floor −60 for silence).
+pub fn frame_db(frame: &[i16]) -> f64 {
+    let rms = rms_level(frame);
+    if rms > 0.0 {
+        20.0 * rms.log10()
+    } else {
+        -60.0
+    }
+}
+
+/// Sample the mic for `msecs` and return peak dBFS for a live meter.
+/// None when no input device (or unknown `input` name). Blocks ≈`msecs`
+/// plus ~100ms stream setup — poll off the UI thread.
+pub fn mic_level_sample(msecs: u64, input: Option<&str>) -> Option<f64> {
+    let msecs = msecs.clamp(50, 1000);
+    let (_capture, mic_rx) = AudioCapture::start_on(input)?;
+    let start = std::time::Instant::now();
+    let mut peak = -60.0f64;
+    while start.elapsed() < std::time::Duration::from_millis(msecs) {
+        match mic_rx.recv_timeout(std::time::Duration::from_millis(25)) {
+            Ok(frame) => peak = peak.max(frame_db(&frame)),
+            Err(_) => continue,
+        }
+    }
+    Some(peak)
 }
 
 /// Compute RMS level of a frame, normalized to 0.0–1.0 range.
@@ -482,6 +777,80 @@ mod tests {
         let result = AudioPlayback::start();
         if result.is_none() {
             tracing::info!("No audio output device (expected on headless)");
+        }
+    }
+
+    #[test]
+    fn test_frame_db_silence_floor() {
+        assert_eq!(frame_db(&[]), -60.0);
+        assert_eq!(frame_db(&[0, 0, 0]), -60.0);
+    }
+
+    #[test]
+    fn test_frame_db_full_scale_near_zero() {
+        // Full-scale constant tone: rms = 1.0 -> 0 dBFS.
+        let db = frame_db(&[i16::MAX; 160]);
+        assert!(db > -0.001 && db <= 0.0, "db={db}");
+    }
+
+    #[test]
+    fn test_frame_db_half_scale_minus_six() {
+        // Half amplitude -> ~-6.02 dBFS.
+        let db = frame_db(&[16384; 160]);
+        assert!((db + 6.02).abs() < 0.01, "db={db}");
+    }
+
+    #[test]
+    fn test_device_enumeration_never_panics() {
+        // Hardware-free assertion: enumeration returns (possibly empty)
+        // lists on any machine, headless or not.
+        let _ = (input_device_names(), output_device_names());
+        let _ = (default_input_name(), default_output_name());
+    }
+
+    #[test]
+    fn test_named_device_unknown_errors() {
+        // Unknown names error deterministically, with or without hardware.
+        assert!(AudioCapture::start_on(Some("ostmac-no-such-device")).is_none());
+        assert!(AudioPlayback::start_on(Some("ostmac-no-such-device")).is_none());
+        assert!(
+            mic_test_report_on(1, false, Some("ostmac-no-such-device"), None).is_err()
+        );
+        assert!(play_tone_on(100, Some("ostmac-no-such-device")).is_err());
+        assert!(mic_level_sample(50, Some("ostmac-no-such-device")).is_none());
+    }
+
+    #[test]
+    fn test_concurrent_audio_ops_stay_bounded() {
+        // Regression: concurrent enumeration + open + sample wedged in a
+        // CoreAudio mutex (BoomAudio). Every path must return; the join is
+        // timeout-bounded so a regression fails instead of hanging the suite.
+        let (tx, rx) = mpsc::channel::<&'static str>();
+        for (i, name) in ["enum", "open-in", "open-out", "level"].iter().enumerate() {
+            let tx = tx.clone();
+            let name = *name;
+            thread::spawn(move || {
+                match i {
+                    0 => {
+                        let _ = (input_device_names(), output_device_names());
+                    }
+                    1 => {
+                        let _ = AudioCapture::start_on(Some("ostmac-no-such-device"));
+                    }
+                    2 => {
+                        let _ = AudioPlayback::start_on(Some("ostmac-no-such-device"));
+                    }
+                    _ => {
+                        let _ = mic_level_sample(50, Some("ostmac-no-such-device"));
+                    }
+                }
+                let _ = tx.send(name);
+            });
+        }
+        drop(tx);
+        for _ in 0..4 {
+            rx.recv_timeout(Duration::from_secs(60))
+                .expect("audio op hung (setup-lock regression)");
         }
     }
 }
