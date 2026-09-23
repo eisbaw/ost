@@ -66,6 +66,11 @@ enum Commands {
 
         /// Message content
         message: String,
+
+        /// Reply to this message id (quote reply; parent resolved
+        /// from the newest history page for attribution)
+        #[arg(long)]
+        reply_to: Option<String>,
     },
 
     /// List joined teams and their channels
@@ -189,9 +194,12 @@ async fn main() -> Result<()> {
         Commands::Read { chat_id, limit } => {
             api::read_messages(&chat_id, limit).await?;
         }
-        Commands::Send { to, message } => {
+        Commands::Send { to, message, reply_to } => {
             tracing::info!("Sending message...");
-            api::send_message(&to, &message).await?;
+            match reply_to {
+                Some(parent) => api::reply_message(&to, &parent, &message).await?,
+                None => api::send_message(&to, &message).await?,
+            }
         }
         Commands::Trouter => {
             trouter::connect_and_run().await?;
