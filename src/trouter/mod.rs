@@ -236,6 +236,7 @@ async fn handle_frame(frame: &str, http: &reqwest::Client, skype_token: &str) {
                 "[MSG]"
             };
             println!("{} Event: {}", prefix, json_str);
+            crate::event_hub::publish(json_str.to_string());
 
             // If this is a call event, try to parse and auto-answer.
             if is_call {
