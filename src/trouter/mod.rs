@@ -89,7 +89,7 @@ async fn connect_and_run_inner() -> Result<DisconnectReason> {
     );
 
     let skype_token_str = &skype_token.token;
-    let http = reqwest::Client::new();
+    let http = crate::api::client::shared_http();
 
     // 1. Negotiate session (returns session info + epid)
     let (session, epid) = session::negotiate(&http, skype_token_str).await?;

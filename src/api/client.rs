@@ -4,6 +4,8 @@
 
 use anyhow::{bail, Context, Result};
 
+use std::sync::OnceLock;
+
 use crate::auth::TokenStore;
 use crate::config::Config;
 
@@ -15,6 +17,13 @@ const CHATSVCAGG: &str = "https://chatsvcagg.teams.microsoft.com";
 pub struct TeamsClient {
     http: reqwest::Client,
     config: Config,
+}
+
+/// Process-wide shared HTTP client: one connection pool for all calls.
+/// `Client::clone` is cheap — clones share the pool.
+pub fn shared_http() -> reqwest::Client {
+    static HTTP: OnceLock<reqwest::Client> = OnceLock::new();
+    HTTP.get_or_init(reqwest::Client::new).clone()
 }
 
 impl TeamsClient {
@@ -46,7 +55,7 @@ impl TeamsClient {
         }
 
         Ok(Self {
-            http: reqwest::Client::new(),
+            http: shared_http(),
             config,
         })
     }

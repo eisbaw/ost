@@ -40,7 +40,7 @@ pub async fn exchange_skype_token(
 
     tracing::debug!("Exchanging AAD token for Skype token at {}", url);
 
-    let client = reqwest::Client::new();
+    let client = crate::api::client::shared_http();
     let resp = client
         .post(url)
         .bearer_auth(aad_token)
