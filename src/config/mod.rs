@@ -5,11 +5,13 @@ use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
+use std::time::SystemTime;
 
 use crate::auth::{StoredToken, TokenStore};
 
 /// Application configuration
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Config {
     /// Stored AAD access token (audience: api.spaces.skype.com)
     pub access_token: Option<StoredToken>,
@@ -54,6 +56,28 @@ impl Config {
         toml::from_str(&content).context("Failed to parse config file")
     }
 
+    /// Load configuration, reusing an in-memory copy when the file is
+    /// unchanged (same size + mtime; missing file caches as default).
+    /// Same result as [`Self::load`]; skips disk read + TOML parse on hits.
+    /// [`Self::save`] writes through the cache, so in-process updates are
+    /// always coherent; external writers are picked up on mtime change.
+    pub fn load_cached() -> Result<Self> {
+        let path = Self::config_path()?;
+        let fp = fingerprint_of(&path);
+        if let Some(hit) = cache_get(&fp) {
+            return Ok(hit);
+        }
+        let cfg = Self::load()?;
+        cache_put(&fp, cfg.clone());
+        Ok(cfg)
+    }
+
+    /// Drop the cached config (tests; the next [`Self::load_cached`]
+    /// re-reads from disk).
+    pub fn invalidate_cache() {
+        *config_cache().lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
     /// Save configuration to disk
     pub fn save(&self) -> Result<()> {
         let dir = Self::config_dir()?;
@@ -62,6 +86,9 @@ impl Config {
         let path = Self::config_path()?;
         let content = toml::to_string_pretty(self).context("Failed to serialize config")?;
         fs::write(&path, content).context("Failed to write config file")?;
+        // Write through the cache so later load_cached() stays coherent.
+        let fp = fingerprint_of(&path);
+        cache_put(&fp, self.clone());
 
         // Set restrictive permissions on config file (contains tokens)
         #[cfg(unix)]
@@ -117,6 +144,33 @@ impl Config {
     }
 }
 
+/// (file size, mtime) when the config file exists; `None` when absent
+/// (caches as default until the file appears).
+type Fingerprint = Option<(u64, SystemTime)>;
+
+fn config_cache() -> &'static Mutex<Option<(Fingerprint, Config)>> {
+    static C: OnceLock<Mutex<Option<(Fingerprint, Config)>>> = OnceLock::new();
+    C.get_or_init(|| Mutex::new(None))
+}
+
+fn fingerprint_of(path: &PathBuf) -> Fingerprint {
+    fs::metadata(path)
+        .ok()
+        .and_then(|m| m.modified().ok().map(|t| (m.len(), t)))
+}
+
+fn cache_get(fp: &Fingerprint) -> Option<Config> {
+    let guard = config_cache().lock().unwrap_or_else(|e| e.into_inner());
+    match guard.as_ref() {
+        Some((cfp, cfg)) if cfp == fp => Some(cfg.clone()),
+        _ => None,
+    }
+}
+
+fn cache_put(fp: &Fingerprint, cfg: Config) {
+    *config_cache().lock().unwrap_or_else(|e| e.into_inner()) = Some((fp.clone(), cfg));
+}
+
 impl TokenStore for Config {
     fn get_access_token(&self) -> Option<StoredToken> {
         self.access_token.clone()
@@ -142,5 +196,23 @@ impl TokenStore for Config {
         self.ic3_token = None;
         self.recorder_token = None;
         self.region_gtms = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn load_cached_matches_load_across_invalidate() {
+        // Read-only: no interference with other tests.
+        Config::invalidate_cache();
+        let disk = Config::load().expect("load");
+        let hit = Config::load_cached().expect("cached");
+        let ser = |c: &Config| toml::to_string(c).expect("serialize");
+        assert_eq!(ser(&disk), ser(&hit));
+        Config::invalidate_cache();
+        let reloaded = Config::load_cached().expect("reload");
+        assert_eq!(ser(&disk), ser(&reloaded));
     }
 }

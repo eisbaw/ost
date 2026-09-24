@@ -20,7 +20,7 @@ pub struct TeamsClient {
 impl TeamsClient {
     /// Load config and build client. Attempts token refresh if AAD token is expired.
     pub async fn new() -> Result<Self> {
-        let mut config = Config::load()?;
+        let mut config = Config::load_cached()?;
 
         // Auto-refresh if any token is expired but refresh token exists
         let needs_refresh = config.get_access_token().map_or(true, |t| t.is_expired())
@@ -30,7 +30,7 @@ impl TeamsClient {
                 tracing::info!("Tokens missing or expired, refreshing...");
                 match crate::auth::oauth::refresh().await {
                     Ok(true) => {
-                        config = Config::load()?;
+                        config = Config::load_cached()?;
                         tracing::info!("Token refreshed");
                     }
                     Ok(false) => {

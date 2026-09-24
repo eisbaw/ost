@@ -6,6 +6,7 @@ mod api;
 mod auth;
 mod calling;
 mod config;
+mod event_hub;
 mod models;
 mod trouter;
 mod tui;
