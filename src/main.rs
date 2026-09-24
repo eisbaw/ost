@@ -71,6 +71,12 @@ enum Commands {
     /// List joined teams and their channels
     Teams,
 
+    /// List a channel's pinned tabs (read-only)
+    Tabs {
+        /// Channel ID (from `teams` output)
+        channel_id: String,
+    },
+
     /// Show current user info (verify auth works)
     Whoami,
 
@@ -178,6 +184,10 @@ async fn main() -> Result<()> {
         }
         Commands::Teams => {
             api::list_teams().await?;
+        }
+        Commands::Tabs { channel_id } => {
+            tracing::info!("Fetching channel tabs...");
+            api::list_tabs(&channel_id).await?;
         }
         Commands::Whoami => {
             api::whoami().await?;
