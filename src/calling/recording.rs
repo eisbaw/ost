@@ -11,8 +11,7 @@ use std::time::Duration;
 
 use super::call_test::extract_call_payload;
 use super::signaling::{
-    self, trouter_callback, ConversationCallParams, SKYPE_CLIENT_HEADER, TEAMS_PARTITION,
-    TEAMS_REGION, TEAMS_RING,
+    self, trouter_callback, ConversationCallParams, TeamsHeaders, TeamsRegion, SKYPE_CLIENT_HEADER,
 };
 use crate::trouter::websocket::TrouterSocket;
 
@@ -21,9 +20,31 @@ const RECORDER_BOT_MRI: &str = "28:bdd75849-e0a6-4cce-8fc1-d7c0d4da43e5";
 
 /// FlightProxy recorder service base URL.
 /// Captured from USEA region; other regions use different hostnames
-/// (e.g. aks-prod-euwe-* for West Europe). TODO: derive from region config.
+/// (e.g. aks-prod-euwe-* for West Europe).
 const RECORDER_SERVICE_BASE: &str =
     "https://api.flightproxy.teams.microsoft.com/api/v2/ep/aks-prod-usea-p08-api.callrecorder.teams.cloud.microsoft:23444";
+
+/// EUWE (West Europe) recorder pod number is provisional — captured traffic only
+/// covers USEA. Payload extraction (`extract_recorder_from_payload`) stays the
+/// primary path and returns the real hostname; this map only feeds the fallback.
+const RECORDER_EUWE_POD: &str = "p08";
+
+/// Default region slug for the recorder-base fallback (captured traffic is AMER/USEA).
+pub const DEFAULT_RECORDER_REGION: &str = "amer";
+
+/// Recorder service base URL for a region slug (case-insensitive).
+///
+/// Unknown/empty regions fall back to the captured USEA base.
+fn recorder_service_base_for_region(region: &str) -> String {
+    const FLIGHTPROXY_EP: &str = "https://api.flightproxy.teams.microsoft.com/api/v2/ep";
+    match region.trim().to_ascii_lowercase().as_str() {
+        "euwe" | "eu" | "emea" => format!(
+            "{}/aks-prod-euwe-{}-api.callrecorder.teams.cloud.microsoft:23444",
+            FLIGHTPROXY_EP, RECORDER_EUWE_POD
+        ),
+        _ => RECORDER_SERVICE_BASE.to_string(),
+    }
+}
 
 /// Delay between transcription start and recording start.
 /// Teams web client waits ~11s, but we use 2s to race against solo-call teardown.
@@ -46,6 +67,11 @@ pub struct RecordingParams<'a> {
     pub conversation_id: &'a str,
     /// The addParticipantAndModality URL (derived from conversationController).
     pub add_participant_url: &'a str,
+    /// Teams cloud region for the `ms-teams-*` headers on every request.
+    /// Its `region` slug also feeds the recorder-base fallback (e.g. "amer",
+    /// "euwe"); only used when the payload lacks a callrecorder hostname —
+    /// the extracted hostname stays the primary path.
+    pub region: &'a TeamsRegion,
 }
 
 /// Base recorder feature flags (shared between bot invitation and recording start).
@@ -142,9 +168,7 @@ pub async fn add_recorder_bot(
         .header("x-microsoft-skype-chain-id", params.chain_id)
         .header("x-microsoft-skype-message-id", &recorder_message_id)
         .header("x-microsoft-skype-client", SKYPE_CLIENT_HEADER)
-        .header("ms-teams-partition", TEAMS_PARTITION)
-        .header("ms-teams-region", TEAMS_REGION)
-        .header("ms-teams-ring", TEAMS_RING)
+        .teams_headers(params.region)
         .header("x-ms-migration", "True")
         .json(&payload)
         .send()
@@ -340,6 +364,7 @@ pub async fn start_call_recording(
     let placeholder_conv_id =
         extract_conversation_id(conversation_controller).unwrap_or_else(|| "unknown".to_string());
 
+    let region = TeamsRegion::from_env_or_default();
     let params = RecordingParams {
         caller_mri,
         participant_id,
@@ -354,6 +379,7 @@ pub async fn start_call_recording(
         skype_token,
         conversation_id: &placeholder_conv_id,
         add_participant_url: &add_url,
+        region: &region,
     };
 
     tracing::info!("Starting recording flow (add URL: {})", add_url);
@@ -367,7 +393,7 @@ pub async fn start_call_recording(
     // is the recorder bot with a conversationController URL pointing at the recorder service.
     let recorder_info = serde_json::from_str::<serde_json::Value>(&add_response)
         .ok()
-        .and_then(|v| extract_recorder_from_payload(&v));
+        .and_then(|v| extract_recorder_from_payload(&v, &params.region.region));
 
     // Fallback: try Trouter callback if the HTTP response didn't contain recorder info
     let recorder_info = match recorder_info {
@@ -387,8 +413,16 @@ pub async fn start_call_recording(
                 message_id,
                 caller_oid: "", // not needed for acknowledgement
                 tenant_id: "",  // not needed for acknowledgement
+                region: &region,
             };
-            wait_for_recorder_info(ws, Duration::from_secs(30), http, &conv_params).await
+            wait_for_recorder_info(
+                ws,
+                Duration::from_secs(30),
+                http,
+                &conv_params,
+                &params.region.region,
+            )
+            .await
         }
     };
 
@@ -536,6 +570,7 @@ async fn wait_for_recorder_info(
     timeout: Duration,
     http: &reqwest::Client,
     conv_params: &ConversationCallParams<'_>,
+    fallback_region: &str,
 ) -> Option<(String, String)> {
     let deadline = tokio::time::Instant::now() + timeout;
 
@@ -590,7 +625,9 @@ async fn wait_for_recorder_info(
                                 tracing::info!("Found recorder-related Trouter frame");
                                 // Save full payload for analysis
                                 std::fs::write("/tmp/recorder_trouter_payload.json", &payload_str).ok();
-                                if let Some(result) = extract_recorder_from_payload(&payload) {
+                                if let Some(result) =
+                                    extract_recorder_from_payload(&payload, fallback_region)
+                                {
                                     return Some(result);
                                 }
                             } else {
@@ -627,7 +664,13 @@ async fn wait_for_recorder_info(
 /// `https://api.flightproxy.teams.microsoft.com/api/v2/ep/{recorder-host}:{port}/...`
 /// We extract the FlightProxy base + ep hostname:port as the recorder service base,
 /// and the conversation ID from the URL path.
-fn extract_recorder_from_payload(payload: &serde_json::Value) -> Option<(String, String)> {
+///
+/// `fallback_region` feeds only the fallback base when no callrecorder hostname
+/// is present; the extracted hostname stays the primary path.
+fn extract_recorder_from_payload(
+    payload: &serde_json::Value,
+    fallback_region: &str,
+) -> Option<(String, String)> {
     // Search the entire payload JSON string for recorder-related URLs
     let payload_str = serde_json::to_string(payload).unwrap_or_default();
 
@@ -679,8 +722,9 @@ fn extract_recorder_from_payload(payload: &serde_json::Value) -> Option<(String,
                     // Extract conv ID and recorder service URL from this
                     let conv_id = extract_conversation_id(cc);
                     if let Some(cid) = conv_id {
-                        // Derive recorder base from the conv controller hostname
-                        return Some((RECORDER_SERVICE_BASE.to_string(), cid));
+                        // Fallback base from caller-supplied region; payload
+                        // hostname extraction above stays the primary path.
+                        return Some((recorder_service_base_for_region(fallback_region), cid));
                     }
                 }
             }
@@ -811,5 +855,100 @@ mod tests {
 
         let url2 = "https://amer03-1.conv.skype.com/conv/abc123/something";
         assert_eq!(extract_conversation_id(url2), Some("abc123".to_string()));
+    }
+
+    #[test]
+    fn test_default_teams_region_matches_recorder_default() {
+        // Ties the two merged behaviors: the TeamsRegion default slug feeds
+        // the recorder-base fallback, which resolves it to the USEA base.
+        assert_eq!(TeamsRegion::default().region, DEFAULT_RECORDER_REGION);
+        assert_eq!(
+            recorder_service_base_for_region(&TeamsRegion::default().region),
+            RECORDER_SERVICE_BASE
+        );
+    }
+
+    #[test]
+    fn test_recorder_base_usea() {
+        assert_eq!(recorder_service_base_for_region("usea"), RECORDER_SERVICE_BASE);
+        assert_eq!(recorder_service_base_for_region("USEA"), RECORDER_SERVICE_BASE);
+        assert_eq!(
+            recorder_service_base_for_region("  Usea "),
+            RECORDER_SERVICE_BASE
+        );
+    }
+
+    #[test]
+    fn test_recorder_base_euwe() {
+        let base = recorder_service_base_for_region("euwe");
+        assert!(base.starts_with(
+            "https://api.flightproxy.teams.microsoft.com/api/v2/ep/aks-prod-euwe-"
+        ));
+        assert!(base.ends_with("-api.callrecorder.teams.cloud.microsoft:23444"));
+        assert_ne!(base, RECORDER_SERVICE_BASE);
+        assert_eq!(base, recorder_service_base_for_region("EUWE"));
+    }
+
+    #[test]
+    fn test_recorder_base_eu_aliases() {
+        let euwe = recorder_service_base_for_region("euwe");
+        assert_eq!(recorder_service_base_for_region("eu"), euwe);
+        assert_eq!(recorder_service_base_for_region("emea"), euwe);
+        assert_eq!(recorder_service_base_for_region(" EMEA "), euwe);
+        assert_eq!(recorder_service_base_for_region("Eu"), euwe);
+    }
+
+    #[test]
+    fn test_recorder_base_unknown_falls_back_to_usea() {
+        assert_eq!(recorder_service_base_for_region(""), RECORDER_SERVICE_BASE);
+        assert_eq!(
+            recorder_service_base_for_region("amer"),
+            RECORDER_SERVICE_BASE
+        );
+        assert_eq!(
+            recorder_service_base_for_region("xx99"),
+            RECORDER_SERVICE_BASE
+        );
+    }
+
+    /// Payload with the recorder bot participant but NO callrecorder
+    /// hostname — forces the region-derived fallback path.
+    fn recorder_bot_payload_no_hostname() -> serde_json::Value {
+        serde_json::json!({
+            "participants": [{
+                "id": RECORDER_BOT_MRI,
+                "conversationController":
+                    "https://amer03-1.conv.skype.com/conv/abc123-def-456"
+            }]
+        })
+    }
+
+    #[test]
+    fn test_extract_recorder_fallback_uses_region() {
+        let payload = recorder_bot_payload_no_hostname();
+        let (base, cid) = extract_recorder_from_payload(&payload, "amer")
+            .expect("fallback must yield base + conv id");
+        assert_eq!(base, RECORDER_SERVICE_BASE);
+        assert_eq!(cid, "abc123-def-456");
+
+        let (base_eu, cid_eu) = extract_recorder_from_payload(&payload, "euwe")
+            .expect("fallback must yield base + conv id");
+        assert!(base_eu.contains("aks-prod-euwe-"));
+        assert_ne!(base_eu, RECORDER_SERVICE_BASE);
+        assert_eq!(cid_eu, "abc123-def-456");
+    }
+
+    #[test]
+    fn test_extract_recorder_primary_path_ignores_region() {
+        // Callrecorder hostname present -> extracted base wins regardless of region.
+        let payload = serde_json::json!({
+            "participants": [{
+                "id": RECORDER_BOT_MRI,
+                "conversationController": "https://api.flightproxy.teams.microsoft.com/api/v2/ep/aks-prod-usea-p08-api.callrecorder.teams.cloud.microsoft:23444/v2/oncommand/19:meeting_abc@thread.v2"
+            }]
+        });
+        let (base, _) = extract_recorder_from_payload(&payload, "euwe")
+            .expect("primary path must yield base + conv id");
+        assert!(base.contains("aks-prod-usea-p08-api.callrecorder.teams.cloud.microsoft:23444"));
     }
 }
