@@ -399,6 +399,7 @@ pub async fn run_call_test(
         "outgoing",
         true,
         video_ssrc,
+        audio_ssrc,
     )
     .await
     .context("Failed to set up outgoing media leg")?;
@@ -684,6 +685,8 @@ struct MediaLeg {
     video_local_pwd: String,
     /// Video SSRC matching the SDP x-ssrc-range.
     video_ssrc: u32,
+    /// Audio SSRC matching the SDP x-ssrc-range.
+    audio_ssrc: u32,
     /// Camera frame receiver (when --camera is active).
     #[cfg(feature = "video-capture")]
     camera_rx: Option<std::sync::mpsc::Receiver<camera::YuvFrame>>,
@@ -727,6 +730,7 @@ async fn setup_media_leg(
     label: &str,
     controlling: bool,
     video_ssrc: u32,
+    audio_ssrc: u32,
 ) -> Result<MediaLeg> {
     // Decompress and log the full SDP for debugging
     let decompressed = crate::calling::sdp_compress::decompress_sdp(remote_sdp)
@@ -854,6 +858,7 @@ async fn setup_media_leg(
         video_remote_addr,
         video_local_pwd: local_video_pwd.to_string(),
         video_ssrc,
+        audio_ssrc,
         #[cfg(feature = "video-capture")]
         camera_rx: None,
         #[cfg(feature = "video-capture")]
@@ -878,11 +883,7 @@ fn spawn_media_leg(
     let label = leg.label.clone();
     let mut handles = Vec::new();
 
-    let ssrc = {
-        let id = uuid::Uuid::new_v4();
-        let b = id.as_bytes();
-        u32::from_be_bytes([b[0], b[1], b[2], b[3]])
-    };
+    let ssrc = leg.audio_ssrc;
 
     let send_stats = Arc::new(Mutex::new(rtcp::RtpSendStats {
         ssrc,
