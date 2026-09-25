@@ -70,7 +70,7 @@ pub async fn run_call_test(
     use_display: bool,
     tone_mode: bool,
 ) -> Result<CallTestResult> {
-    let config = Config::load().context("Failed to load config")?;
+    let config = Config::load_cached().context("Failed to load config")?;
     let skype_token = config
         .get_skype_token()
         .context("No skype token. Run `teams-cli login` first.")?;

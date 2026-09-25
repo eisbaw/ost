@@ -100,7 +100,13 @@ async fn acquire_graph_token(
 /// Refresh the AAD access token using a stored refresh_token, then
 /// re-exchange for a Skype token. Returns Ok(true) if refresh succeeded.
 pub async fn refresh() -> Result<bool> {
-    let mut config = Config::load()?;
+    refresh_for(&crate::config::active_profile()).await
+}
+
+/// Same as [`refresh`], scoped to one account profile (multi-account:
+/// per-account refresh without switching the active profile).
+pub async fn refresh_for(profile: &str) -> Result<bool> {
+    let mut config = Config::load_cached_for(profile)?;
     let refresh_token_str = match config.get_refresh_token() {
         Some(rt) => rt,
         None => return Ok(false),
@@ -187,7 +193,7 @@ pub async fn refresh() -> Result<bool> {
         }
     }
 
-    config.save()?;
+    config.save_to(profile)?;
     tracing::info!("Token refresh complete");
     Ok(true)
 }
@@ -195,7 +201,7 @@ pub async fn refresh() -> Result<bool> {
 /// Perform OAuth2 login flow
 pub async fn login(force: bool) -> Result<()> {
     {
-        let config = Config::load()?;
+        let config = Config::load_cached()?;
 
         // Check for existing valid token
         if !force {
@@ -270,7 +276,7 @@ pub async fn login(force: bool) -> Result<()> {
         .context("Failed to exchange device code for token")?;
 
     // Save AAD tokens (single load-mutate-save)
-    let mut config = Config::load()?;
+    let mut config = Config::load_cached()?;
     config.set_access_token(
         token_response.access_token().secret().to_string(),
         token_response.expires_in().map(|d| d.as_secs()),
@@ -371,7 +377,7 @@ pub async fn login(force: bool) -> Result<()> {
 
 /// Clear stored credentials
 pub async fn logout() -> Result<()> {
-    let mut config = Config::load()?;
+    let mut config = Config::load_cached()?;
     config.clear_tokens();
     config.save()?;
     println!("Logged out.");
@@ -380,7 +386,7 @@ pub async fn logout() -> Result<()> {
 
 /// Display current auth status
 pub async fn status() -> Result<()> {
-    let config = Config::load()?;
+    let config = Config::load_cached()?;
 
     // AAD token status
     match config.get_access_token() {
