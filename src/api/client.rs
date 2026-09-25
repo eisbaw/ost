@@ -90,6 +90,27 @@ impl TeamsClient {
         check_response(resp, &url).await
     }
 
+    /// GET request with `ConsistencyLevel: eventual` (Graph `$search` /
+    /// `$count` queries 400 without it). Otherwise identical to
+    /// [`graph_get`](Self::graph_get). OstMac (om-jb-filesearch): people
+    /// search.
+    pub async fn graph_get_consistent(&self, path: &str) -> Result<reqwest::Response> {
+        let token = self.graph_token()?;
+        let url = format!("{}{}", GRAPH_BASE, path);
+        tracing::debug!("Graph GET {}", url);
+
+        let resp = self
+            .http
+            .get(&url)
+            .bearer_auth(&token)
+            .header("ConsistencyLevel", "eventual")
+            .send()
+            .await
+            .with_context(|| format!("Graph GET {} failed", url))?;
+
+        check_response(resp, &url).await
+    }
+
     /// POST request to Microsoft Graph API (bearer auth with Graph token).
     pub async fn graph_post(
         &self,
@@ -108,6 +129,74 @@ impl TeamsClient {
             .send()
             .await
             .with_context(|| format!("Graph POST {} failed", url))?;
+
+        check_response(resp, &url).await
+    }
+
+    /// PUT bytes to Microsoft Graph API (drive upload). `content_type` is
+    /// the file MIME; Graph accepts `application/octet-stream` for all.
+    pub async fn graph_put_bytes(
+        &self,
+        path: &str,
+        bytes: Vec<u8>,
+        content_type: &str,
+    ) -> Result<reqwest::Response> {
+        let token = self.graph_token()?;
+        let url = format!("{}{}", GRAPH_BASE, path);
+        tracing::debug!("Graph PUT {} ({} bytes)", url, bytes.len());
+
+        let resp = self
+            .http
+            .put(&url)
+            .bearer_auth(&token)
+            .header(reqwest::header::CONTENT_TYPE, content_type.to_string())
+            .body(bytes)
+            .send()
+            .await
+            .with_context(|| format!("Graph PUT {} failed", url))?;
+
+        check_response(resp, &url).await
+    }
+
+    /// PATCH request to Microsoft Graph API (Bearer [REDACTED] with Graph token).
+    /// DriveItem rename/move PATCH `name` / `parentReference`.
+    /// (Same helper as #12's `graph_patch`: merging both keeps one copy.)
+    pub async fn graph_patch(
+        &self,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> Result<reqwest::Response> {
+        let token = self.graph_token()?;
+        let url = format!("{}{}", GRAPH_BASE, path);
+        tracing::debug!("Graph PATCH {}", url);
+
+        let resp = self
+            .http
+            .patch(&url)
+            .bearer_auth(&token)
+            .json(body)
+            .send()
+            .await
+            .with_context(|| format!("Graph PATCH {} failed", url))?;
+
+        check_response(resp, &url).await
+    }
+
+    /// DELETE request to Microsoft Graph API (Bearer [REDACTED] with Graph token).
+    /// DriveItem delete removes the item (204, no body).
+    /// OstMac (om-h5-members): also used for team member removal.
+    pub async fn graph_delete(&self, path: &str) -> Result<reqwest::Response> {
+        let token = self.graph_token()?;
+        let url = format!("{}{}", GRAPH_BASE, path);
+        tracing::debug!("Graph DELETE {}", url);
+
+        let resp = self
+            .http
+            .delete(&url)
+            .bearer_auth(&token)
+            .send()
+            .await
+            .with_context(|| format!("Graph DELETE {} failed", url))?;
 
         check_response(resp, &url).await
     }
