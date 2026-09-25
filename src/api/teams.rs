@@ -27,6 +27,11 @@ struct Channel {
     id: String,
     #[serde(rename = "displayName")]
     display_name: Option<String>,
+    description: Option<String>,
+    #[serde(rename = "membershipType")]
+    membership_type: Option<String>,
+    #[serde(rename = "webUrl")]
+    web_url: Option<String>,
 }
 
 /// List joined teams and channels (prints to stdout).
@@ -68,6 +73,38 @@ pub struct TeamInfo {
 pub struct ChannelInfo {
     pub id: String,
     pub name: String,
+    /// Graph `description` (absent on old/unset channels).
+    pub description: Option<String>,
+    /// Graph `membershipType` (`standard`/`private`/`shared`).
+    pub membership_type: Option<String>,
+    /// Graph `webUrl` (open-in-browser deep link).
+    pub web_url: Option<String>,
+}
+
+/// Join one team by id: self-enroll via `POST /teams/{id}/members`.
+/// Resolves the caller's own user id from Graph /me, then adds self as
+/// a plain member (`aadUserConversationMember`, no roles). Returns the
+/// trimmed team id on success.
+///
+/// Join-by-code (6-char Teams invite codes) is NOT Graph — codes redeem
+/// only through the undocumented teams.microsoft.com web API, so codes
+/// are out of scope here; callers pass the team id (GUID).
+pub async fn join_team_data(client: &TeamsClient, team_id: &str) -> Result<String> {
+    let id = team_id.trim();
+    anyhow::ensure!(!id.is_empty(), "empty team_id");
+    anyhow::ensure!(
+        !id.contains(['/', '?', '#']),
+        "invalid team_id (path separator)"
+    );
+    let me = super::me::whoami_data(client).await?;
+    let body = serde_json::json!({
+        "@odata.type": "#microsoft.graph.aadUserConversationMember",
+        "roles": [],
+        "user@odata.bind": format!("https://graph.microsoft.com/v1.0/users('{}')", me.id),
+    });
+    let path = format!("/teams/{}/members", id);
+    client.graph_post(&path, &body).await?;
+    Ok(id.to_string())
 }
 
 /// List joined teams with their channels and return structured data.
@@ -98,6 +135,9 @@ pub async fn list_teams_data(client: &TeamsClient) -> Result<Vec<TeamInfo>> {
                     .map(|ch| ChannelInfo {
                         name: ch.display_name.unwrap_or_else(|| ch.id.clone()),
                         id: ch.id,
+                        description: ch.description,
+                        membership_type: ch.membership_type,
+                        web_url: ch.web_url,
                     })
                     .collect()
             }
