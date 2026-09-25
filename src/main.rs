@@ -58,6 +58,16 @@ enum Commands {
         limit: usize,
     },
 
+    /// Search Teams messages (Graph /search/query, first window)
+    Search {
+        /// Free-text query (KQL scope terms like from: allowed)
+        query: String,
+
+        /// Maximum hits to show (Graph caps at 25)
+        #[arg(short, long, default_value = "25")]
+        limit: usize,
+    },
+
     /// Send a message
     Send {
         /// Chat thread ID (from `chats` output)
@@ -192,6 +202,9 @@ async fn main() -> Result<()> {
         Commands::Send { to, message } => {
             tracing::info!("Sending message...");
             api::send_message(&to, &message).await?;
+        }
+        Commands::Search { query, limit } => {
+            api::search_messages(&query, limit).await?;
         }
         Commands::Trouter => {
             trouter::connect_and_run().await?;

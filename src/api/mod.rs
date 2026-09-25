@@ -5,6 +5,7 @@ pub mod client;
 mod graph;
 mod me;
 mod presence;
+mod search;
 mod teams;
 
 use anyhow::Result;
@@ -24,7 +25,13 @@ pub use teams::ChannelInfo;
 pub use chat::{list_chats_data, read_messages_data, send_message_with_client};
 pub use me::whoami_data;
 pub use presence::get_presence_data;
+pub use search::{clamp_size, next_from, parse_search_response, search_body, search_messages_data, SearchHitInfo, SearchPage, SEARCH_MAX_SIZE};
 pub use teams::list_teams_data;
+
+/// Search Teams messages (Graph `/search/query`, first window)
+pub async fn search_messages(query: &str, limit: usize) -> Result<()> {
+    search::search_messages(query, limit).await
+}
 
 /// List recent chats (native Teams API)
 pub async fn list_chats(limit: usize) -> Result<()> {
