@@ -11,8 +11,8 @@ use std::time::Duration;
 
 use super::call_test::extract_call_payload;
 use super::signaling::{
-    self, trouter_callback, ConversationCallParams, SKYPE_CLIENT_HEADER, TEAMS_PARTITION,
-    TEAMS_REGION, TEAMS_RING,
+    self, trouter_callback, ConversationCallParams, TeamsRegion, SKYPE_CLIENT_HEADER,
+    TEAMS_PARTITION, TEAMS_REGION, TEAMS_RING,
 };
 use crate::trouter::websocket::TrouterSocket;
 
@@ -375,6 +375,7 @@ pub async fn start_call_recording(
         None => {
             tracing::info!("Recorder URL not in HTTP response, waiting on Trouter (30s)...");
             // Build ConversationCallParams for acknowledging callAcceptance frames
+            let region = TeamsRegion::from_env_or_default();
             let conv_params = ConversationCallParams {
                 ic3_token,
                 trouter_surl,
@@ -387,6 +388,7 @@ pub async fn start_call_recording(
                 message_id,
                 caller_oid: "", // not needed for acknowledgement
                 tenant_id: "",  // not needed for acknowledgement
+                region: &region,
             };
             wait_for_recorder_info(ws, Duration::from_secs(30), http, &conv_params).await
         }
