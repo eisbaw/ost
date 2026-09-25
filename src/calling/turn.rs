@@ -736,22 +736,9 @@ fn add_message_integrity_and_fingerprint(mut buf: Vec<u8>, key: &[u8]) -> Vec<u8
 
 /// Compute TURN long-term credential key: MD5(username:realm:password).
 fn compute_long_term_key(username: &str, realm: &str, password: &str) -> Vec<u8> {
-    use sha2::Digest;
     // RFC 5389 section 15.4: key = MD5(username ":" realm ":" SASLprep(password))
-    // We use a simple MD5 here (via manual implementation since we don't have md5 crate).
-    // Actually, the standard says MD5 but we can approximate with what we have.
-    // For correctness, let's compute it properly.
-
-    // Since we don't have md5 in deps, use a simple hash. In practice Teams TURN
-    // servers may use a different auth scheme (short-term). We'll use the credential
-    // directly as the HMAC key for short-term auth as a fallback.
     let input = format!("{}:{}:{}", username, realm, password);
-
-    // Use SHA-1 hash truncated — not ideal but we lack MD5. For Teams' proprietary
-    // auth the credential itself may be the HMAC key.
-    // TODO: Add md5 dependency for proper long-term credential support.
-    // For now, use the credential bytes directly (works for short-term auth).
-    password.as_bytes().to_vec()
+    md5::compute(input.as_bytes()).0.to_vec()
 }
 
 fn encode_xor_address(addr: SocketAddr, txn_id: &[u8]) -> Vec<u8> {
@@ -1143,8 +1130,9 @@ mod tests {
     fn test_message_integrity_and_fingerprint() {
         let txn = [0xABu8; 12];
         let req = build_allocate_request(&txn, Some("testuser"), Some("realm"), Some("nonce"));
-        let key = b"testpassword";
-        let final_msg = add_message_integrity_and_fingerprint(req, key);
+        // Long-term path: HMAC key is MD5(user:realm:pass), not raw password bytes.
+        let key = compute_long_term_key("testuser", "realm", "testpassword");
+        let final_msg = add_message_integrity_and_fingerprint(req, &key);
 
         // Should have FINGERPRINT as last attribute
         let len = final_msg.len();
@@ -1160,5 +1148,25 @@ mod tests {
         ]);
         let computed_crc = crc32(&final_msg[..len - 8]);
         assert_eq!(fp_val, computed_crc ^ FINGERPRINT_XOR);
+    }
+
+    #[test]
+    fn test_compute_long_term_key_rfc5389_vector() {
+        // RFC 5389 section 15.4: key = MD5(username ":" realm ":" password).
+        // Expected digests verified independently with system md5(1).
+        let key = compute_long_term_key("user", "realm", "pass");
+        assert_eq!(key.len(), 16);
+        assert_eq!(key_hex(&key), "8493fbc53ba582fb4c044c456bdc40eb");
+    }
+
+    #[test]
+    fn test_compute_long_term_key_empty() {
+        let key = compute_long_term_key("", "", "");
+        assert_eq!(key.len(), 16);
+        assert_eq!(key_hex(&key), "4501c091b0366d76ea3218b6cfdd8097");
+    }
+
+    fn key_hex(key: &[u8]) -> String {
+        key.iter().map(|b| format!("{:02x}", b)).collect()
     }
 }

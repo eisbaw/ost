@@ -24,6 +24,7 @@ home = "=0.5.11"
 base64 = "0.22"
 sha1 = "0.10"
 sha2 = "0.10"
+md5 = "0.8"
 flate2 = { version = "1", features = ["zlib-rs"], default-features = false }
 
 # SRTP crypto (AES-128-CM + HMAC-SHA1-80)
