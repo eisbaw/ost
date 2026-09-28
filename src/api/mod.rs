@@ -1,18 +1,25 @@
 //! API client module for Microsoft Teams
 
+pub mod apps;
 mod chat;
 pub mod client;
 mod graph;
 mod me;
 mod presence;
+mod tabs;
 mod teams;
 
 use anyhow::Result;
 
 // Re-export data types for TUI integration
+pub use apps::{
+    app_catalog_data, app_search_data, app_store_data, install_app_for_user, AppCatalog, AppEntitlement, AppManifest,
+    AppStore, ConfigurableTab, StaticTab, StoreSection, WebApplicationInfo,
+};
 pub use chat::{ChatInfo, MessageInfo};
 pub use me::UserInfo;
 pub use presence::PresenceInfo;
+pub use tabs::TabInfo;
 pub use teams::TeamInfo;
 
 // Re-export ChannelInfo for use in TUI sidebar (currently consumed
@@ -24,6 +31,7 @@ pub use teams::ChannelInfo;
 pub use chat::{list_chats_data, read_messages_data, send_message_with_client};
 pub use me::whoami_data;
 pub use presence::get_presence_data;
+pub use tabs::list_tabs_data;
 pub use teams::list_teams_data;
 
 /// List recent chats (native Teams API)
@@ -59,4 +67,14 @@ pub async fn whoami() -> Result<()> {
 /// List joined teams and their channels
 pub async fn list_teams() -> Result<()> {
     teams::list_teams().await
+}
+
+/// List a channel's pinned tabs (read-only)
+pub async fn list_tabs(channel_id: &str) -> Result<()> {
+    tabs::list_tabs(channel_id).await
+}
+
+/// Dump every joined channel's tabs (one auth, read-only)
+pub async fn list_tabs_all() -> Result<()> {
+    tabs::list_tabs_all().await
 }
