@@ -1,5 +1,6 @@
 //! API client module for Microsoft Teams
 
+pub mod apps;
 mod chat;
 pub mod client;
 mod graph;
@@ -10,6 +11,7 @@ mod teams;
 use anyhow::Result;
 
 // Re-export data types for TUI integration
+pub use apps::{app_catalog_data, AppCatalog, AppEntitlement, AppManifest, ConfigurableTab, StaticTab, WebApplicationInfo};
 pub use chat::{ChatInfo, MessageInfo};
 pub use me::UserInfo;
 pub use presence::PresenceInfo;

@@ -4,17 +4,77 @@
 
 use anyhow::{bail, Context, Result};
 
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
+
 use crate::auth::TokenStore;
 use crate::config::Config;
 
 const GRAPH_BASE: &str = "https://graph.microsoft.com/v1.0";
 const DEFAULT_CHAT_SERVICE: &str = "https://amer.ng.msg.teams.microsoft.com";
 const CHATSVCAGG: &str = "https://chatsvcagg.teams.microsoft.com";
+const DEFAULT_MIDDLE_TIER: &str = "https://teams.microsoft.com/api/mt/amer";
+
+/// Connect deadline for every request the client makes: a dead network
+/// fails fast instead of hanging a section load forever.
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Default whole-request deadline for API calls. Long transfers opt out
+/// via [`TeamsClient::with_timeout`] / [`TeamsClient::graph_get_download`].
+pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Request observer: `(method, url, status, elapsed_ms)`, status 0 means
+/// a transport failure or timeout. Called once per `TeamsClient` request
+/// after the response head (or the failure) arrives. A host installing
+/// this must not log the raw URL (ids, query) verbatim.
+pub type RequestObserver = fn(&str, &str, u16, u64);
+static OBSERVER: OnceLock<RequestObserver> = OnceLock::new();
+
+/// Install the process-wide request observer (first call wins).
+pub fn set_request_observer(f: RequestObserver) {
+    let _ = OBSERVER.set(f);
+}
+
+/// Send with an optional whole-request deadline, reporting to the
+/// observer.
+trait SendObserved {
+    fn send_observed(
+        self,
+        method: &'static str,
+        url: &str,
+        timeout: Option<Duration>,
+    ) -> impl std::future::Future<Output = reqwest::Result<reqwest::Response>> + Send;
+}
+
+impl SendObserved for reqwest::RequestBuilder {
+    fn send_observed(
+        self,
+        method: &'static str,
+        url: &str,
+        timeout: Option<Duration>,
+    ) -> impl std::future::Future<Output = reqwest::Result<reqwest::Response>> + Send {
+        let rb = match timeout {
+            Some(t) => self.timeout(t),
+            None => self,
+        };
+        let url = url.to_string();
+        async move {
+            let t0 = Instant::now();
+            let r = rb.send().await;
+            if let Some(f) = OBSERVER.get() {
+                let status = r.as_ref().map(|x| x.status().as_u16()).unwrap_or(0);
+                f(method, &url, status, t0.elapsed().as_millis() as u64);
+            }
+            r
+        }
+    }
+}
 
 /// Authenticated client that handles both Graph (AAD) and Teams (Skype) APIs.
 pub struct TeamsClient {
     http: reqwest::Client,
     config: Config,
+    /// Whole-request deadline for API calls (`None` = connect only).
+    timeout: Option<Duration>,
 }
 
 impl TeamsClient {
@@ -45,10 +105,38 @@ impl TeamsClient {
             }
         }
 
+        let http = reqwest::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+
         Ok(Self {
-            http: reqwest::Client::new(),
+            http,
             config,
+            timeout: Some(DEFAULT_REQUEST_TIMEOUT),
         })
+    }
+
+    /// Per-client deadline override: `None` = connect timeout only (long
+    /// transfers), `Some(d)` = whole-request deadline `d`.
+    pub fn with_timeout(mut self, timeout: Option<Duration>) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    /// [`graph_get`](Self::graph_get) without the whole-request deadline:
+    /// content downloads stream for as long as they need.
+    pub async fn graph_get_download(&self, path: &str) -> Result<reqwest::Response> {
+        let token = self.graph_token()?;
+        let url = format!("{}{}", GRAPH_BASE, path);
+        let resp = self
+            .http
+            .get(&url)
+            .bearer_auth(&token)
+            .send_observed("GET", &url, None)
+            .await
+            .with_context(|| format!("Graph GET {} failed", url))?;
+        check_response(resp, &url).await
     }
 
     fn graph_token(&self) -> Result<String> {
@@ -83,7 +171,7 @@ impl TeamsClient {
             .http
             .get(&url)
             .bearer_auth(&token)
-            .send()
+            .send_observed("GET", &url, self.timeout)
             .await
             .with_context(|| format!("Graph GET {} failed", url))?;
 
@@ -105,7 +193,7 @@ impl TeamsClient {
             .post(&url)
             .bearer_auth(&token)
             .json(body)
-            .send()
+            .send_observed("POST", &url, self.timeout)
             .await
             .with_context(|| format!("Graph POST {} failed", url))?;
 
@@ -121,7 +209,7 @@ impl TeamsClient {
             .http
             .get(url)
             .header("X-SkypeToken", &token)
-            .send()
+            .send_observed("GET", url, self.timeout)
             .await
             .with_context(|| format!("Teams GET {} failed", url))?;
 
@@ -142,10 +230,59 @@ impl TeamsClient {
             .post(url)
             .header("X-SkypeToken", &token)
             .json(body)
-            .send()
+            .send_observed("POST", url, self.timeout)
             .await
             .with_context(|| format!("Teams POST {} failed", url))?;
 
+        check_response(resp, url).await
+    }
+
+    /// Apps-platform middle tier base (`region_gtms.middleTier`),
+    /// falling back to the default region.
+    pub fn middle_tier_url(&self) -> String {
+        self.config
+            .get_region_gtms()
+            .and_then(|v| v.get("middleTier").and_then(|s| s.as_str()).map(String::from))
+            .unwrap_or_else(|| DEFAULT_MIDDLE_TIER.to_string())
+    }
+
+    /// Middle-tier auth: the Teams AAD token as Bearer plus X-Skypetoken
+    /// (the shell's `mtAuthWithSkypeXTokenResource`).
+    fn mt_request(&self, req: reqwest::RequestBuilder) -> Result<reqwest::RequestBuilder> {
+        let aad = self
+            .config
+            .get_access_token()
+            .context("No AAD token. Run 'teams-cli login' first.")?;
+        if aad.is_expired() {
+            bail!("AAD token expired. Run 'teams-cli login'.");
+        }
+        Ok(req
+            .bearer_auth(&aad.token)
+            .header("X-Skypetoken", self.skype_token()?)
+            .header("x-ms-client-type", "desktop"))
+    }
+
+    /// GET against the apps-platform middle tier.
+    pub async fn mt_get(&self, url: &str) -> Result<reqwest::Response> {
+        tracing::debug!("MT GET {}", url);
+        let resp = self
+            .mt_request(self.http.get(url))?
+            .send_observed("GET", url, self.timeout)
+            .await
+            .with_context(|| format!("MT GET {} failed", url))?;
+        check_response(resp, url).await
+    }
+
+    /// POST (JSON) against the apps-platform middle tier (read-only
+    /// queries: entitlement views, batched definitions).
+    pub async fn mt_post(&self, url: &str, body: &serde_json::Value) -> Result<reqwest::Response> {
+        tracing::debug!("MT POST {}", url);
+        let resp = self
+            .mt_request(self.http.post(url))?
+            .json(body)
+            .send_observed("POST", url, self.timeout)
+            .await
+            .with_context(|| format!("MT POST {} failed", url))?;
         check_response(resp, url).await
     }
 
@@ -183,7 +320,7 @@ impl TeamsClient {
             .get(url)
             .bearer_auth(&token)
             .header("x-ms-client-version", "1416/1.0.0.2024050301")
-            .send()
+            .send_observed("GET", url, self.timeout)
             .await
             .with_context(|| format!("CSA GET {} failed", url))?;
 
@@ -199,7 +336,7 @@ impl TeamsClient {
             .http
             .get(url)
             .header("Authentication", format!("skypetoken={}", token))
-            .send()
+            .send_observed("GET", url, self.timeout)
             .await
             .with_context(|| format!("Chat GET {} failed", url))?;
 
@@ -220,7 +357,7 @@ impl TeamsClient {
             .post(url)
             .header("Authentication", format!("skypetoken={}", token))
             .json(body)
-            .send()
+            .send_observed("POST", url, self.timeout)
             .await
             .with_context(|| format!("Chat POST {} failed", url))?;
 
