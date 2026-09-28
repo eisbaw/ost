@@ -283,6 +283,7 @@ pub async fn run_call_test(
     let chain_id = uuid::Uuid::new_v4().to_string();
     let message_id = uuid::Uuid::new_v4().to_string();
 
+    let teams_region = signaling::TeamsRegion::from_config_or_env(&config);
     let conv_params = signaling::ConversationCallParams {
         ic3_token: ic3_token_str,
         trouter_surl: &trouter_session.surl,
@@ -295,6 +296,7 @@ pub async fn run_call_test(
         message_id: &message_id,
         caller_oid,
         tenant_id,
+        region: &teams_region,
     };
 
     // Place the call: 1:1 calls (echo or thread) use single-shot epconv, channel uses two-phase
@@ -509,6 +511,7 @@ pub async fn run_call_test(
             let message_id = message_id.clone();
             let thread_id = thread_id.clone();
             let display_name = display_name.clone();
+            let teams_region = teams_region.clone();
             let trouter_surl = trouter_session.surl.clone();
             let ic3_token = ic3_token_str.to_string();
             let skype_token = skype_token_str.to_string();
@@ -532,6 +535,7 @@ pub async fn run_call_test(
                     &rec_token,
                     &skype_token,
                     add_participant_url_override.as_deref(),
+                    &teams_region,
                 )
                 .await
                 {

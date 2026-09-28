@@ -27,6 +27,13 @@ pub struct Config {
     pub recorder_token: Option<StoredToken>,
     /// Regional endpoint URLs from authsvc response (JSON stored as string for TOML compat)
     pub region_gtms: Option<String>,
+    /// Teams-cloud `ms-teams-partition` header override (non-AMER tenants).
+    /// `None` falls back to the AMER default; `TEAMS_PARTITION` env wins.
+    pub teams_partition: Option<String>,
+    /// Teams-cloud `ms-teams-region` header override. Env `TEAMS_REGION` wins.
+    pub teams_region: Option<String>,
+    /// Teams-cloud `ms-teams-ring` header override. Env `TEAMS_RING` wins.
+    pub teams_ring: Option<String>,
 }
 
 impl Config {
@@ -142,5 +149,27 @@ impl TokenStore for Config {
         self.ic3_token = None;
         self.recorder_token = None;
         self.region_gtms = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn teams_region_fields_round_trip_and_default_to_none() {
+        // Old configs without the fields still parse (all-None).
+        let legacy: Config = toml::from_str("tenant_id = \"t\"\n").expect("parse");
+        assert_eq!(legacy.teams_partition, None);
+        assert_eq!(legacy.teams_region, None);
+        assert_eq!(legacy.teams_ring, None);
+        // New fields survive a TOML round-trip.
+        let mut cfg = Config::default();
+        cfg.teams_partition = Some("euwe01".to_string());
+        cfg.teams_region = Some("euwe".to_string());
+        let back: Config = toml::from_str(&toml::to_string(&cfg).expect("ser")).expect("parse");
+        assert_eq!(back.teams_partition.as_deref(), Some("euwe01"));
+        assert_eq!(back.teams_region.as_deref(), Some("euwe"));
+        assert_eq!(back.teams_ring, None);
     }
 }
