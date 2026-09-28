@@ -21,7 +21,11 @@ pub use teams::TeamInfo;
 pub use teams::ChannelInfo;
 
 // Re-export data-returning functions for TUI integration
-pub use chat::{list_chats_data, read_messages_data, send_message_with_client};
+pub use chat::{
+    build_message_html, is_channel_conversation_id, list_chats_data, read_messages_data,
+    send_message_body, send_message_with_client, thread_reply_conversation, thread_reply_url,
+    thread_reply_with_client,
+};
 pub use me::whoami_data;
 pub use presence::get_presence_data;
 pub use teams::list_teams_data;
