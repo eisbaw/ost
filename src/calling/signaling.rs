@@ -8,12 +8,76 @@ use super::CallNotification;
 use uuid;
 
 // Common headers for Teams calling API requests.
-// TODO: region headers are hardcoded to AMER — derive from config for other tenants.
 pub(crate) const SKYPE_CLIENT_HEADER: &str =
     "SkypeSpaces/1415/teams-cli/TsCallingVersion=2025.49.01.15";
 pub(crate) const TEAMS_PARTITION: &str = "amer03";
 pub(crate) const TEAMS_REGION: &str = "amer";
 pub(crate) const TEAMS_RING: &str = "general";
+
+/// Teams cloud region for the `ms-teams-*` request headers.
+///
+/// Defaults to the AMER cloud; non-default values ride on
+/// `ConversationCallParams::region`, sourced from `from_env_or_default`
+/// at the call-placement entry points.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TeamsRegion {
+    pub partition: String,
+    pub region: String,
+    pub ring: String,
+}
+
+impl Default for TeamsRegion {
+    fn default() -> Self {
+        Self {
+            partition: TEAMS_PARTITION.to_string(),
+            region: TEAMS_REGION.to_string(),
+            ring: TEAMS_RING.to_string(),
+        }
+    }
+}
+
+impl TeamsRegion {
+    /// Region with per-field overrides over the AMER default.
+    ///
+    /// Pure helper so tests stay hermetic (process env is global).
+    pub fn with_overrides(
+        partition: Option<String>,
+        region: Option<String>,
+        ring: Option<String>,
+    ) -> Self {
+        let d = Self::default();
+        Self {
+            partition: partition.unwrap_or(d.partition),
+            region: region.unwrap_or(d.region),
+            ring: ring.unwrap_or(d.ring),
+        }
+    }
+
+    /// Region from `TEAMS_PARTITION`/`TEAMS_REGION`/`TEAMS_RING` env vars,
+    /// falling back to the AMER default per field.
+    ///
+    /// Mirrors the `TEAMS_EPCONV_URL` override pattern for region testing.
+    pub fn from_env_or_default() -> Self {
+        Self::with_overrides(
+            std::env::var("TEAMS_PARTITION").ok(),
+            std::env::var("TEAMS_REGION").ok(),
+            std::env::var("TEAMS_RING").ok(),
+        )
+    }
+}
+
+/// Request-builder extension applying the `ms-teams-*` region headers.
+pub(crate) trait TeamsHeaders {
+    fn teams_headers(self, region: &TeamsRegion) -> Self;
+}
+
+impl TeamsHeaders for reqwest::RequestBuilder {
+    fn teams_headers(self, region: &TeamsRegion) -> Self {
+        self.header("ms-teams-partition", &region.partition)
+            .header("ms-teams-region", &region.region)
+            .header("ms-teams-ring", &region.ring)
+    }
+}
 
 /// Response from phase 1 (create conversation).
 #[derive(Debug)]
@@ -49,6 +113,8 @@ pub struct ConversationCallParams<'a> {
     /// OID (object ID) extracted from caller MRI, e.g. the GUID part of "8:orgid:{guid}".
     pub caller_oid: &'a str,
     pub tenant_id: &'a str,
+    /// Teams cloud region for the `ms-teams-*` headers on every request.
+    pub region: &'a TeamsRegion,
 }
 
 /// Build a Trouter callback URL for a specific path.
@@ -154,9 +220,7 @@ pub async fn create_conversation(
         .header("x-microsoft-skype-message-id", params.message_id)
         .header("x-microsoft-skype-client", SKYPE_CLIENT_HEADER)
         .header("Referer", "https://teams.microsoft.com/")
-        .header("ms-teams-partition", TEAMS_PARTITION)
-        .header("ms-teams-region", TEAMS_REGION)
-        .header("ms-teams-ring", TEAMS_RING)
+        .teams_headers(params.region)
         .header("x-ms-migration", "True")
         .json(&payload)
         .send()
@@ -341,9 +405,7 @@ pub async fn join_conversation_with_sdp(
         .header("x-microsoft-skype-message-id", params.message_id)
         .header("x-microsoft-skype-client", SKYPE_CLIENT_HEADER)
         .header("Referer", "https://teams.microsoft.com/")
-        .header("ms-teams-partition", TEAMS_PARTITION)
-        .header("ms-teams-region", TEAMS_REGION)
-        .header("ms-teams-ring", TEAMS_RING)
+        .teams_headers(params.region)
         .header("x-ms-migration", "True")
         .json(&payload)
         .send()
@@ -534,9 +596,7 @@ pub async fn acknowledge_call_acceptance(
         .header("x-microsoft-skype-message-id", params.message_id)
         .header("x-microsoft-skype-client", SKYPE_CLIENT_HEADER)
         .header("Referer", "https://teams.microsoft.com/")
-        .header("ms-teams-partition", TEAMS_PARTITION)
-        .header("ms-teams-region", TEAMS_REGION)
-        .header("ms-teams-ring", TEAMS_RING)
+        .teams_headers(params.region)
         .json(&serde_json::json!({
             "callAcceptanceAcknowledgement": cc_call_links(&tc)
         }))
@@ -593,9 +653,7 @@ pub async fn register_cc_callbacks(
         .header("x-microsoft-skype-message-id", params.message_id)
         .header("x-microsoft-skype-client", SKYPE_CLIENT_HEADER)
         .header("Referer", "https://teams.microsoft.com/")
-        .header("ms-teams-partition", TEAMS_PARTITION)
-        .header("ms-teams-region", TEAMS_REGION)
-        .header("ms-teams-ring", TEAMS_RING)
+        .teams_headers(params.region)
         .json(&payload)
         .send()
         .await
@@ -737,9 +795,7 @@ pub async fn create_echo_call(
         .header("x-microsoft-skype-message-id", params.message_id)
         .header("x-microsoft-skype-client", SKYPE_CLIENT_HEADER)
         .header("Referer", "https://teams.microsoft.com/")
-        .header("ms-teams-partition", TEAMS_PARTITION)
-        .header("ms-teams-region", TEAMS_REGION)
-        .header("ms-teams-ring", TEAMS_RING)
+        .teams_headers(params.region)
         .header("x-ms-migration", "True")
         .json(&payload)
         .send()
@@ -881,9 +937,7 @@ pub async fn invite_echo_bot(
         .header("x-microsoft-skype-message-id", &echo_bot_msg_id)
         .header("x-microsoft-skype-client", SKYPE_CLIENT_HEADER)
         .header("Referer", "https://teams.microsoft.com/")
-        .header("ms-teams-partition", TEAMS_PARTITION)
-        .header("ms-teams-region", TEAMS_REGION)
-        .header("ms-teams-ring", TEAMS_RING)
+        .teams_headers(params.region)
         .header("x-ms-migration", "True")
         .json(&payload)
         .send()
@@ -1020,9 +1074,7 @@ pub async fn create_1to1_call(
         .header("x-microsoft-skype-message-id", params.message_id)
         .header("x-microsoft-skype-client", SKYPE_CLIENT_HEADER)
         .header("Referer", "https://teams.microsoft.com/")
-        .header("ms-teams-partition", TEAMS_PARTITION)
-        .header("ms-teams-region", TEAMS_REGION)
-        .header("ms-teams-ring", TEAMS_RING)
+        .teams_headers(params.region)
         .header("x-ms-migration", "True")
         .json(&payload)
         .send()
@@ -1175,9 +1227,7 @@ pub async fn invite_user(
         .header("x-microsoft-skype-message-id", &invite_msg_id)
         .header("x-microsoft-skype-client", SKYPE_CLIENT_HEADER)
         .header("Referer", "https://teams.microsoft.com/")
-        .header("ms-teams-partition", TEAMS_PARTITION)
-        .header("ms-teams-region", TEAMS_REGION)
-        .header("ms-teams-ring", TEAMS_RING)
+        .teams_headers(params.region)
         .header("x-ms-migration", "True")
         .json(&payload)
         .send()
@@ -1232,5 +1282,77 @@ pub async fn end_call(
         Ok(())
     } else {
         anyhow::bail!("Call end failed ({}): {}", status, body);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn headers_for(region: &TeamsRegion) -> reqwest::header::HeaderMap {
+        reqwest::Client::new()
+            .post("https://example.invalid/")
+            .teams_headers(region)
+            .build()
+            .expect("build request")
+            .headers()
+            .clone()
+    }
+
+    #[test]
+    fn default_region_headers_are_amer() {
+        let h = headers_for(&TeamsRegion::default());
+        assert_eq!(h.get("ms-teams-partition").unwrap(), "amer03");
+        assert_eq!(h.get("ms-teams-region").unwrap(), "amer");
+        assert_eq!(h.get("ms-teams-ring").unwrap(), "general");
+    }
+
+    #[test]
+    fn custom_region_headers_override_default() {
+        let eu = TeamsRegion {
+            partition: "euwe01".to_string(),
+            region: "euwe".to_string(),
+            ring: "general".to_string(),
+        };
+        let h = headers_for(&eu);
+        assert_eq!(h.get("ms-teams-partition").unwrap(), "euwe01");
+        assert_eq!(h.get("ms-teams-region").unwrap(), "euwe");
+        assert_eq!(h.get("ms-teams-ring").unwrap(), "general");
+    }
+
+    #[test]
+    fn overrides_apply_per_field_over_default() {
+        let r = TeamsRegion::with_overrides(None, Some("euwe".to_string()), None);
+        assert_eq!(r.partition, "amer03");
+        assert_eq!(r.region, "euwe");
+        assert_eq!(r.ring, "general");
+
+        let all_none = TeamsRegion::with_overrides(None, None, None);
+        assert_eq!(all_none, TeamsRegion::default());
+    }
+
+    #[test]
+    fn params_region_threads_into_headers() {
+        let eu =
+            TeamsRegion::with_overrides(Some("euwe01".to_string()), Some("euwe".to_string()), None);
+        let params = ConversationCallParams {
+            ic3_token: "",
+            trouter_surl: "",
+            caller_mri: "",
+            caller_display_name: "",
+            endpoint_id: "",
+            participant_id: "",
+            thread_id: "",
+            chain_id: "",
+            message_id: "",
+            caller_oid: "",
+            tenant_id: "",
+            region: &eu,
+        };
+        // Same call pattern as all 8 signaling request sites.
+        let h = headers_for(params.region);
+        assert_eq!(h.get("ms-teams-partition").unwrap(), "euwe01");
+        assert_eq!(h.get("ms-teams-region").unwrap(), "euwe");
+        assert_eq!(h.get("ms-teams-ring").unwrap(), "general");
     }
 }
