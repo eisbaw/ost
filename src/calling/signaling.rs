@@ -374,11 +374,32 @@ pub async fn join_conversation_with_sdp(
     })
 }
 
-/// Accept an incoming call by POSTing to the acceptance URL.
+/// Modalities an answering endpoint accepts: audio only, or audio +
+/// video for a video answer (1:1 video calls).
+pub fn accepted_call_modalities(video: bool) -> Vec<&'static str> {
+    if video {
+        vec!["Audio", "Video"]
+    } else {
+        vec!["Audio"]
+    }
+}
+
+/// Accept an incoming call by POSTing to the acceptance URL (audio only).
 pub async fn accept_call(
     http: &reqwest::Client,
     skype_token: &str,
     notification: &CallNotification,
+) -> Result<()> {
+    accept_call_with_video(http, skype_token, notification, false).await
+}
+
+/// Accept an incoming call, advertising Video in `acceptedCallModalities`
+/// when `video` is set (the SDP answer carries the video m-line either way).
+pub async fn accept_call_with_video(
+    http: &reqwest::Client,
+    skype_token: &str,
+    notification: &CallNotification,
+    video: bool,
 ) -> Result<()> {
     let invitation = notification
         .call_invitation
@@ -394,7 +415,7 @@ pub async fn accept_call(
         .context("No acceptance URL in links")?;
 
     let payload = serde_json::json!({
-        "acceptedCallModalities": ["Audio"],
+        "acceptedCallModalities": accepted_call_modalities(video),
         "endpointMetadata": {
             "isCallMediaCaptured": false,
             "isMicrophoneOn": false
@@ -1232,5 +1253,16 @@ pub async fn end_call(
         Ok(())
     } else {
         anyhow::bail!("Call end failed ({}): {}", status, body);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepted_call_modalities_audio_and_video() {
+        assert_eq!(accepted_call_modalities(false), vec!["Audio"]);
+        assert_eq!(accepted_call_modalities(true), vec!["Audio", "Video"]);
     }
 }
