@@ -71,6 +71,96 @@ enum Commands {
     /// List joined teams and their channels
     Teams,
 
+    /// List shared files in a chat or channel
+    Files {
+        /// Chat or channel ID (from `chats` / `teams` output)
+        chat_id: String,
+
+        /// Maximum number of files to show
+        #[arg(short, long, default_value = "20")]
+        limit: usize,
+    },
+
+    /// Download a shared file by drive+item id
+    FilesDownload {
+        /// Drive ID (from `files` output)
+        drive_id: String,
+
+        /// DriveItem ID
+        item_id: String,
+
+        /// Destination file path
+        out: String,
+    },
+
+    /// Upload a local file to a chat or channel (<4 MB)
+    FilesUpload {
+        /// Chat or channel ID (from `chats` / `teams` output)
+        #[arg(short, long)]
+        to: String,
+
+        /// Local file path
+        path: String,
+    },
+
+    /// Create a view-only sharing link for a shared file
+    FilesLink {
+        /// Drive ID (from `files` list output)
+        drive_id: String,
+
+        /// DriveItem ID
+        item_id: String,
+
+        /// Link scope: organization (org-only, default) or anonymous
+        #[arg(long, default_value = "organization")]
+        scope: String,
+    },
+
+    /// Search OneDrive files by name/content (om-jb-filesearch)
+    FileSearch {
+        /// Free-text query
+        query: String,
+
+        /// Maximum number of files to show
+        #[arg(short, long, default_value = "25")]
+        limit: usize,
+    },
+
+    /// Search the directory for people (om-jb-filesearch)
+    PeopleSearch {
+        /// Free-text query (matches display name)
+        query: String,
+
+        /// Maximum number of people to show
+        #[arg(short, long, default_value = "25")]
+        limit: usize,
+    },
+
+    /// Team roster (Graph /teams/{id}/members).
+    /// Bare: list members + owners. --owners: owners only.
+    /// --add <user-id-or-upn> [--owner]: add. --remove <membership-id>: remove.
+    Members {
+        /// Team id (from `teams` output)
+        #[arg(long)]
+        team: String,
+
+        /// Show owners only (list mode)
+        #[arg(long)]
+        owners: bool,
+
+        /// Add this user id or UPN to the team
+        #[arg(long)]
+        add: Option<String>,
+
+        /// Grant the owner role with --add
+        #[arg(long)]
+        owner: bool,
+
+        /// Remove this membership id (from list output) from the team
+        #[arg(long)]
+        remove: Option<String>,
+    },
+
     /// Show current user info (verify auth works)
     Whoami,
 
@@ -178,6 +268,56 @@ async fn main() -> Result<()> {
         }
         Commands::Teams => {
             api::list_teams().await?;
+        }
+        Commands::Files { chat_id, limit } => {
+            tracing::info!("Fetching shared files...");
+            api::list_files(&chat_id, limit).await?;
+        }
+        Commands::FilesDownload {
+            drive_id,
+            item_id,
+            out,
+        } => {
+            api::download_file(&drive_id, &item_id, &out).await?;
+        }
+        Commands::FilesUpload { to, path } => {
+            tracing::info!("Uploading file...");
+            api::upload_file(&to, &path).await?;
+        }
+        Commands::FilesLink {
+            drive_id,
+            item_id,
+            scope,
+        } => {
+            api::create_link(&drive_id, &item_id, &scope).await?;
+        }
+        Commands::FileSearch { query, limit } => {
+            tracing::info!("Searching files...");
+            api::search_files(&query, limit).await?;
+        }
+        Commands::PeopleSearch { query, limit } => {
+            tracing::info!("Searching people...");
+            api::search_people(&query, limit).await?;
+        }
+        Commands::Members {
+            team,
+            owners,
+            add,
+            owner,
+            remove,
+        } => {
+            if let Some(user) = add {
+                if remove.is_some() {
+                    anyhow::bail!("--add and --remove are exclusive");
+                }
+                tracing::info!("Adding team member...");
+                api::add_team_member(&team, &user, owner).await?;
+            } else if let Some(member) = remove {
+                tracing::info!("Removing team member...");
+                api::remove_team_member(&team, &member).await?;
+            } else {
+                api::list_team_members(&team, owners).await?;
+            }
         }
         Commands::Whoami => {
             api::whoami().await?;
