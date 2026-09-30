@@ -4,13 +4,14 @@ mod chat;
 pub mod client;
 mod graph;
 mod me;
+pub mod media;
 mod presence;
 mod teams;
 
 use anyhow::Result;
 
 // Re-export data types for TUI integration
-pub use chat::{ChatInfo, MessageInfo};
+pub use chat::{ChatInfo, MessageInfo, MessagesPage};
 pub use me::UserInfo;
 pub use presence::PresenceInfo;
 pub use teams::TeamInfo;
@@ -21,7 +22,12 @@ pub use teams::TeamInfo;
 pub use teams::ChannelInfo;
 
 // Re-export data-returning functions for TUI integration
-pub use chat::{list_chats_data, read_messages_data, send_message_with_client};
+pub use chat::{
+    find_by_client_id, find_message_by_client_id, list_chats_data, new_client_message_id,
+    read_messages_data, read_messages_page, send_message_with_client, send_message_with_client_id,
+    sent_id_from_response, SentMessage,
+};
+pub use media::{fetch_media_data, MediaBytes, MAX_BYTES};
 pub use me::whoami_data;
 pub use presence::get_presence_data;
 pub use teams::list_teams_data;
