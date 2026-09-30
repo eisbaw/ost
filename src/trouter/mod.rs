@@ -236,6 +236,7 @@ async fn handle_frame(frame: &str, http: &reqwest::Client, skype_token: &str) {
                 "[MSG]"
             };
             println!("{} Event: {}", prefix, json_str);
+            crate::event_hub::publish(json_str.to_string());
 
             // If this is a call event, try to parse and auto-answer.
             if is_call {
@@ -257,7 +258,91 @@ async fn handle_frame(frame: &str, http: &reqwest::Client, skype_token: &str) {
         return;
     }
 
+    // Chat-service pushes arrive as HTTP-over-WS data frames
+    // (`3:::`); embedders get the decoded event (was: printed, dropped).
+    if let Some(payload) = frame.strip_prefix("3:::") {
+        if let Some(ev) = data_frame_event(payload) {
+            crate::event_hub::publish(ev); // feed embedders
+        }
+    }
+
     println!("Frame: {}", frame);
+}
+
+/// Decode one Trouter `3:::` data frame payload
+/// (`{id, method, url, headers, body}`) into the pushed chat-service
+/// event JSON. `body` is the event itself, or base64 + gzip
+/// (`X-Microsoft-Skype-Content-Encoding: gzip`, also tried when the
+/// plain body isn't JSON). Only chat-service events (`resourceType` /
+/// `resource` / `eventMessages`) are returned; anything else (calls,
+/// other services) is None and keeps its existing path.
+pub fn data_frame_event(payload: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(payload).ok()?;
+    let obj = v.as_object()?;
+    // `body` sits top-level or under `data` depending on the Trouter
+    // version (same two shapes the call path reads); an object body is
+    // the event itself.
+    let find_body = |m: &serde_json::Map<String, serde_json::Value>| {
+        m.iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("body"))
+            .map(|(_, v)| v.clone())
+    };
+    let body_val = find_body(obj).or_else(|| {
+        obj.iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("data"))
+            .and_then(|(_, d)| d.as_object())
+            .and_then(|d| find_body(d))
+    })?;
+    if body_val.is_object() {
+        return chat_event_json(&body_val.to_string());
+    }
+    let body = body_val.as_str()?;
+    let gzip_header = obj
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("headers"))
+        .and_then(|(_, h)| h.as_object())
+        .map(|h| {
+            h.iter().any(|(k, v)| {
+                k.eq_ignore_ascii_case("X-Microsoft-Skype-Content-Encoding")
+                    && v.as_str().map_or(false, |s| s.to_ascii_lowercase().contains("gzip"))
+            })
+        })
+        .unwrap_or(false);
+    let plain = if gzip_header { None } else { chat_event_json(body) };
+    plain.or_else(|| gunzip_base64(body).and_then(|t| chat_event_json(&t)))
+}
+
+fn chat_event_json(text: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(text).ok()?;
+    // Wrapped payloads (as the Teams clients unwrap them): `cp` = base64 +
+    // gzip JSON, `gp` = base64 JSON.
+    if let Some(cp) = v.get("cp").and_then(|c| c.as_str()) {
+        return gunzip_base64(cp).and_then(|t| chat_event_json(&t));
+    }
+    if let Some(gp) = v.get("gp").and_then(|c| c.as_str()) {
+        use base64::Engine;
+        let raw = base64::engine::general_purpose::STANDARD.decode(gp.trim()).ok()?;
+        return chat_event_json(&String::from_utf8(raw).ok()?);
+    }
+    let is_chat = v.as_object()?.keys().any(|k| {
+        k.eq_ignore_ascii_case("resourceType")
+            || k.eq_ignore_ascii_case("resource")
+            || k.eq_ignore_ascii_case("eventMessages")
+    });
+    is_chat.then(|| text.to_string())
+}
+
+fn gunzip_base64(body: &str) -> Option<String> {
+    use base64::Engine;
+    use std::io::Read;
+    let raw = base64::engine::general_purpose::STANDARD
+        .decode(body.trim())
+        .ok()?;
+    let mut out = String::new();
+    flate2::read::GzDecoder::new(&raw[..])
+        .read_to_string(&mut out)
+        .ok()?;
+    Some(out)
 }
 
 /// Handle a call event from Trouter — parse invitation and auto-answer.
@@ -549,5 +634,68 @@ async fn handle_call_event(json_str: &str, http: &reqwest::Client, skype_token: 
     // Send acceptance.
     if let Err(e) = calling::signaling::accept_call(http, skype_token, &notification).await {
         tracing::warn!("Failed to accept call: {:#}", e);
+    }
+}
+
+#[cfg(test)]
+mod data_frame_tests {
+    use super::data_frame_event;
+
+    fn frame(body: &str, headers: serde_json::Value) -> String {
+        serde_json::json!({"id": 7, "method": "POST", "url": "/v4/f/x/messaging",
+            "headers": headers, "body": body})
+        .to_string()
+    }
+
+    #[test]
+    fn data_frame_plain_chat_event_is_published() {
+        let ev = r#"{"resourceType":"NewMessage","resource":{"id":"1","clientmessageid":"9"}}"#;
+        let got = data_frame_event(&frame(ev, serde_json::json!({}))).unwrap();
+        assert_eq!(got, ev);
+    }
+
+    #[test]
+    fn data_frame_gzip_body_is_decoded() {
+        use base64::Engine;
+        use std::io::Write;
+        let ev = r#"{"eventMessages":[{"resourceType":"NewMessage","resource":{"id":"2"}}]}"#;
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        enc.write_all(ev.as_bytes()).unwrap();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(enc.finish().unwrap());
+        let hdr = serde_json::json!({"X-Microsoft-Skype-Content-Encoding": "gzip"});
+        assert_eq!(data_frame_event(&frame(&b64, hdr)).as_deref(), Some(ev));
+        // Header missing: the base64+gzip fallback still decodes.
+        assert_eq!(data_frame_event(&frame(&b64, serde_json::json!({}))).as_deref(), Some(ev));
+    }
+
+    #[test]
+    fn data_frame_body_under_data_or_as_object() {
+        let ev = r#"{"resourceType":"NewMessage","resource":{"id":"3"}}"#;
+        let nested = serde_json::json!({"id": 9, "data": {"body": ev}}).to_string();
+        assert_eq!(data_frame_event(&nested).as_deref(), Some(ev));
+        let obj = serde_json::json!({"id": 9, "body": {"resourceType": "NewMessage"}}).to_string();
+        assert!(data_frame_event(&obj).unwrap().contains("NewMessage"));
+    }
+
+    #[test]
+    fn data_frame_cp_and_gp_wrappers_are_unwrapped() {
+        use base64::Engine;
+        use std::io::Write;
+        let ev = r#"{"type":"EventMessage","resourceType":"NewMessage","resource":{"id":"4"}}"#;
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        enc.write_all(ev.as_bytes()).unwrap();
+        let cp = base64::engine::general_purpose::STANDARD.encode(enc.finish().unwrap());
+        let body = serde_json::json!({"cp": cp}).to_string();
+        assert_eq!(data_frame_event(&frame(&body, serde_json::json!({}))).as_deref(), Some(ev));
+        let gp = base64::engine::general_purpose::STANDARD.encode(ev);
+        let body = serde_json::json!({"gp": gp}).to_string();
+        assert_eq!(data_frame_event(&frame(&body, serde_json::json!({}))).as_deref(), Some(ev));
+    }
+
+    #[test]
+    fn data_frame_non_chat_payloads_are_skipped() {
+        assert!(data_frame_event(&frame(r#"{"callNotification":{}}"#, serde_json::json!({}))).is_none());
+        assert!(data_frame_event("not json").is_none());
+        assert!(data_frame_event(r#"{"id":1,"status":200}"#).is_none());
     }
 }

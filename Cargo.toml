@@ -5,6 +5,16 @@ edition = "2021"
 description = "Lightweight CLI client for Microsoft Teams"
 license = "MIT"
 
+# OstMac: expose the same modules as a library so ostmac-core (FFI) can reuse
+# auth/api/trouter without forking. Binary target unchanged.
+[lib]
+name = "ost"
+path = "src/lib.rs"
+
+[[bin]]
+name = "teams-cli"
+path = "src/main.rs"
+
 [dependencies]
 # Async runtime
 tokio = { version = "1", features = ["full"] }
