@@ -5,6 +5,7 @@ pub mod client;
 mod graph;
 mod me;
 mod presence;
+mod team_settings;
 mod teams;
 
 use anyhow::Result;
@@ -24,6 +25,7 @@ pub use teams::ChannelInfo;
 pub use chat::{list_chats_data, read_messages_data, send_message_with_client};
 pub use me::whoami_data;
 pub use presence::get_presence_data;
+pub use team_settings::{team_settings_data, TeamMemberSettings};
 pub use teams::list_teams_data;
 
 /// List recent chats (native Teams API)
