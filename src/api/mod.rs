@@ -4,7 +4,9 @@ mod chat;
 pub mod client;
 mod graph;
 mod me;
+mod planner;
 mod presence;
+mod recordings;
 mod teams;
 
 use anyhow::Result;
@@ -12,7 +14,14 @@ use anyhow::Result;
 // Re-export data types for TUI integration
 pub use chat::{ChatInfo, MessageInfo};
 pub use me::UserInfo;
+pub use planner::{BucketInfo, PlanInfo, PlannerTaskInfo};
 pub use presence::PresenceInfo;
+pub use recordings::{
+    clamp_limit as recordings_clamp_limit, is_video as is_recording_video,
+    list_recordings_data, parse_recordings_response, recordings_children_path,
+    recordings_search_path, search_recordings_data, sort_newest as sort_recordings_newest,
+    RecordingInfo, RecordingSource, RECORDINGS_MAX_LIMIT,
+};
 pub use teams::TeamInfo;
 
 // Re-export ChannelInfo for use in TUI sidebar (currently consumed
@@ -23,6 +32,11 @@ pub use teams::ChannelInfo;
 // Re-export data-returning functions for TUI integration
 pub use chat::{list_chats_data, read_messages_data, send_message_with_client};
 pub use me::whoami_data;
+pub use planner::{
+    buckets_path, create_task_body, create_task_data, list_buckets_data, list_plans_data,
+    list_tasks_data, parse_buckets, parse_plans, parse_task, parse_tasks, plans_path,
+    set_complete_body, set_task_complete_data, task_path, tasks_path,
+};
 pub use presence::get_presence_data;
 pub use teams::list_teams_data;
 
