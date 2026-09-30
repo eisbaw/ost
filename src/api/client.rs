@@ -62,7 +62,7 @@ impl TeamsClient {
         Ok(token.token)
     }
 
-    fn skype_token(&self) -> Result<String> {
+    pub(crate) fn skype_token(&self) -> Result<String> {
         let token = self
             .config
             .get_skype_token()
@@ -206,6 +206,46 @@ impl TeamsClient {
         check_response(resp, url).await
     }
 
+    /// Raw-bytes GET for inline chat media (om-richmedia). Microsoft media
+    /// hosts (see `media::needs_auth`) attach the Skype token; public hosts
+    /// fetch without auth so the token never leaks to third parties.
+    /// Rejects over-cap payloads (never truncated).
+    pub async fn media_get(&self, url: &str) -> Result<super::media::MediaBytes> {
+        let mut req = self.http.get(url);
+        if super::media::needs_auth(url) {
+            let token = self.skype_token()?;
+            req = req
+                .header("Authentication", format!("skypetoken={}", token))
+                .header("X-SkypeToken", &token);
+        }
+        tracing::debug!("Media GET {}", url);
+        let resp = req
+            .send()
+            .await
+            .with_context(|| format!("Media GET {} failed", url))?;
+        let resp = check_response(resp, url).await?;
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(String::from);
+        let bytes = resp
+            .bytes()
+            .await
+            .with_context(|| format!("Media GET {} body failed", url))?;
+        if bytes.len() > super::media::MAX_BYTES {
+            anyhow::bail!(
+                "Media {} exceeds {} bytes",
+                url,
+                super::media::MAX_BYTES
+            );
+        }
+        Ok(super::media::MediaBytes {
+            data: bytes.to_vec(),
+            content_type,
+        })
+    }
+
     /// POST using `Authentication: skypetoken=...` header (native chat API).
     pub async fn chat_post(
         &self,
@@ -223,6 +263,54 @@ impl TeamsClient {
             .send()
             .await
             .with_context(|| format!("Chat POST {} failed", url))?;
+
+        check_response(resp, url).await
+    }
+
+    /// PUT using `Authentication: skypetoken=...` header (native chat API).
+    /// OstMac (om-editdel): message edits PUT new content to the per-message URL.
+    pub async fn chat_put(
+        &self,
+        url: &str,
+        body: &serde_json::Value,
+    ) -> Result<reqwest::Response> {
+        let token = self.skype_token()?;
+        tracing::debug!("Chat PUT {}", url);
+
+        let resp = self
+            .http
+            .put(url)
+            .header("Authentication", format!("skypetoken={}", token))
+            .json(body)
+            .send()
+            .await
+            .with_context(|| format!("Chat PUT {} failed", url))?;
+
+        check_response(resp, url).await
+    }
+
+    /// DELETE using `Authentication: skypetoken=...` header (native chat
+    /// API). Optional JSON body, same auth as [`Self::chat_post`];
+    /// message deletes pass `None`.
+    pub async fn chat_delete(
+        &self,
+        url: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<reqwest::Response> {
+        let token = self.skype_token()?;
+        tracing::debug!("Chat DELETE {}", url);
+
+        let mut req = self
+            .http
+            .delete(url)
+            .header("Authentication", format!("skypetoken={}", token));
+        if let Some(b) = body {
+            req = req.json(b);
+        }
+        let resp = req
+            .send()
+            .await
+            .with_context(|| format!("Chat DELETE {} failed", url))?;
 
         check_response(resp, url).await
     }
