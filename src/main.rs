@@ -68,6 +68,31 @@ enum Commands {
         message: String,
     },
 
+    /// Edit one own message
+    Edit {
+        /// Chat thread ID (from `chats` output)
+        #[arg(short, long)]
+        to: String,
+
+        /// Server message id (from `read` verbose logs)
+        #[arg(long)]
+        message_id: String,
+
+        /// Replacement text
+        message: String,
+    },
+
+    /// Delete one own message
+    Delete {
+        /// Chat thread ID (from `chats` output)
+        #[arg(short, long)]
+        to: String,
+
+        /// Server message id (from `read` verbose logs)
+        #[arg(long)]
+        message_id: String,
+    },
+
     /// List joined teams and their channels
     Teams,
 
@@ -192,6 +217,18 @@ async fn main() -> Result<()> {
         Commands::Send { to, message } => {
             tracing::info!("Sending message...");
             api::send_message(&to, &message).await?;
+        }
+        Commands::Edit {
+            to,
+            message_id,
+            message,
+        } => {
+            tracing::info!("Editing message...");
+            api::edit_message(&to, &message_id, &message).await?;
+        }
+        Commands::Delete { to, message_id } => {
+            tracing::info!("Deleting message...");
+            api::delete_message(&to, &message_id).await?;
         }
         Commands::Trouter => {
             trouter::connect_and_run().await?;
