@@ -115,9 +115,22 @@ async fn connect_and_run_inner() -> Result<DisconnectReason> {
     // 5. Register with registrar
     let registrar_ttl_secs: u64 = 86400;
     if let Some(ref reg_url) = session.registrar_url {
-        if let Err(e) = registrar::register(&http, skype_token_str, reg_url, &session.surl).await {
+        if let Err(e) = registrar::register_with_endpoint(
+            &http, skype_token_str, reg_url, &session.surl, Some(&epid),
+        )
+        .await
+        {
             tracing::warn!("Initial registrar registration failed: {:#}", e);
         }
+    }
+    // Mark the endpoint active (Teams clients send this
+    // right after the handshake; the server acks with `6:1+::`).
+    let activity = serde_json::json!({
+        "name": "user.activity",
+        "args": [{"state": "active", "cv": format!("{}.0.1", uuid::Uuid::new_v4().simple())}],
+    });
+    if let Err(e) = ws.send_text(&format!("5:1+::{}", activity)).await {
+        tracing::warn!("user.activity send failed: {:#}", e);
     }
 
     // 6. Event loop: recv frames, send heartbeat, re-register before TTL,
@@ -142,11 +155,30 @@ async fn connect_and_run_inner() -> Result<DisconnectReason> {
 
     println!("Trouter connected. Listening for events... (Ctrl-C to stop)");
 
+    let mut cdl_reregistered = false;
     let disconnect_reason = loop {
         tokio::select! {
             frame = ws.recv_frame() => {
                 match frame {
-                    Ok(Some(text)) => handle_frame(&text, &http, skype_token_str).await,
+                    Ok(Some(text)) => {
+                        // On the first message_loss after connect, →
+                        // re-register the chat (CDL) entry with the 1.9
+                        // template, as the Teams clients do.
+                        if !cdl_reregistered && text.contains("trouter.message_loss") {
+                            cdl_reregistered = true;
+                            if let Some(ref reg_url) = session.registrar_url {
+                                let (h, tok, reg, surl, ep) = (http.clone(), skype_token_str.to_string(),
+                                    reg_url.clone(), session.surl.clone(), epid.clone());
+                                tokio::spawn(async move {
+                                    if let Err(e) = registrar::register_cdl(&h, &tok, &reg, &surl, &ep,
+                                        "TeamsCDLWebWorker_1.9").await {
+                                        tracing::warn!("CDL re-registration failed: {:#}", e);
+                                    }
+                                });
+                            }
+                        }
+                        handle_frame(&text, &http, skype_token_str).await
+                    }
                     Ok(None) => {
                         break DisconnectReason::Error(anyhow::anyhow!("WebSocket closed by server"));
                     }
@@ -167,8 +199,9 @@ async fn connect_and_run_inner() -> Result<DisconnectReason> {
                     let tok = skype_token_str.to_string();
                     let surl = session.surl.clone();
                     let reg = reg_url.clone();
+                    let ep = epid.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = registrar::register(&http2, &tok, &reg, &surl).await {
+                        if let Err(e) = registrar::register_with_endpoint(&http2, &tok, &reg, &surl, Some(&ep)).await {
                             tracing::warn!("Re-registration failed: {:#}", e);
                         }
                     });
