@@ -22,6 +22,10 @@ pub use teams::ChannelInfo;
 
 // Re-export data-returning functions for TUI integration
 pub use chat::{list_chats_data, read_messages_data, send_message_with_client};
+pub use chat::{
+    chat_pinned_messages_data, fill_pin_from_message, graph_pins_path, parse_graph_pins,
+    parse_thread_pins, pick_pins, thread_pins_url, PinSource, PinnedRef,
+};
 pub use me::whoami_data;
 pub use presence::get_presence_data;
 pub use teams::list_teams_data;
