@@ -3,7 +3,7 @@
 //! Uses the Skype token with `Authentication: skypetoken={token}` header,
 //! bypassing Graph API which requires tenant admin consent for Chat.Read.
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
 use super::client::TeamsClient;
@@ -50,6 +50,14 @@ struct NativeMessage {
 #[derive(Debug, Deserialize)]
 struct MessagesResponse {
     messages: Option<Vec<NativeMessage>>,
+    #[serde(rename = "_metadata")]
+    metadata: Option<MessagesMetadata>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MessagesMetadata {
+    #[serde(rename = "backwardLink")]
+    backward_link: Option<String>,
 }
 
 /// Strip HTML tags from content for CLI display.
@@ -182,6 +190,70 @@ pub async fn send_message_with_client(
     Ok(())
 }
 
+/// Per-message URL for edits and deletes (pure so embedders/tests pin it).
+pub fn message_url(base: &str, chat_id: &str, message_id: &str) -> String {
+    format!(
+        "{}/v1/users/ME/conversations/{}/messages/{}",
+        base, chat_id, message_id
+    )
+}
+
+/// Edit body for the native chat API. `skypeeditedid` carries the original
+/// id so receivers (and our realtime parser) classify it as an edit.
+pub fn edit_message_body(message_id: &str, text: &str) -> serde_json::Value {
+    let escaped = html_escape(text);
+    serde_json::json!({
+        "content": format!("<p>{}</p>", escaped),
+        "messagetype": "RichText/Html",
+        "contenttype": "text",
+        "skypeeditedid": message_id,
+    })
+}
+
+/// Edit one own message's text via PUT (prints to stdout).
+pub async fn edit_message(chat_id: &str, message_id: &str, text: &str) -> Result<()> {
+    let client = TeamsClient::new().await?;
+    edit_message_with_client(&client, chat_id, message_id, text).await?;
+    println!("Message edited.");
+    Ok(())
+}
+
+/// Edit one own message using an existing client (shared helper).
+pub async fn edit_message_with_client(
+    client: &TeamsClient,
+    chat_id: &str,
+    message_id: &str,
+    text: &str,
+) -> Result<()> {
+    let base = client.chat_service_url();
+    let url = message_url(&base, chat_id, message_id);
+    let body = edit_message_body(message_id, text);
+    tracing::debug!("Editing message at {}", url);
+    client.chat_put(&url, &body).await?;
+    Ok(())
+}
+
+/// Delete one own message via DELETE (prints to stdout).
+pub async fn delete_message(chat_id: &str, message_id: &str) -> Result<()> {
+    let client = TeamsClient::new().await?;
+    delete_message_with_client(&client, chat_id, message_id).await?;
+    println!("Message deleted.");
+    Ok(())
+}
+
+/// Delete one own message using an existing client (shared helper).
+pub async fn delete_message_with_client(
+    client: &TeamsClient,
+    chat_id: &str,
+    message_id: &str,
+) -> Result<()> {
+    let base = client.chat_service_url();
+    let url = message_url(&base, chat_id, message_id);
+    tracing::debug!("Deleting message at {}", url);
+    client.chat_delete(&url, None).await?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Data-returning API functions for TUI integration
 // ---------------------------------------------------------------------------
@@ -199,9 +271,23 @@ pub struct ChatInfo {
 
 /// A single message for TUI display.
 pub struct MessageInfo {
+    /// Server message id; embedders match realtime edits by this.
+    /// OstMac: synthetic `timestamp@sender` fallback when the server omits it.
+    pub id: String,
     pub sender: String,
     pub timestamp: String,
     pub content: String,
+    /// Unstripped server HTML (om-convrich: embedders mine `<at>` mentions
+    /// and `<pre>` code blocks from it; `content` stays the stripped text).
+    pub raw: String,
+}
+
+/// One page of history plus the cursor for the next older page.
+pub struct MessagesPage {
+    pub messages: Vec<MessageInfo>,
+    /// Server `_metadata.backwardLink`: full URL of the next older page,
+    /// or None when history is exhausted / the server omits metadata.
+    pub backward_link: Option<String>,
 }
 
 /// List recent chats and return structured data.
@@ -296,16 +382,38 @@ pub async fn list_chats_data(client: &TeamsClient, limit: usize) -> Result<Vec<C
 }
 
 /// Read messages from a specific chat thread and return structured data.
+///
+/// Newest page only; use [`read_messages_page`] with the returned
+/// `backward_link` to walk older history.
 pub async fn read_messages_data(
     client: &TeamsClient,
     chat_id: &str,
     limit: usize,
 ) -> Result<Vec<MessageInfo>> {
-    let base = client.chat_service_url();
-    let url = format!(
-        "{}/v1/users/ME/conversations/{}/messages?pageSize={}",
-        base, chat_id, limit
-    );
+    Ok(read_messages_page(client, chat_id, limit, None)
+        .await?
+        .messages)
+}
+
+/// Read one page of history. `page_url` is None for the newest page or
+/// Some(previous `backward_link`) for the next older page. Messages come
+/// back oldest-first; pages never overlap (verified live 2026-09-22).
+pub async fn read_messages_page(
+    client: &TeamsClient,
+    chat_id: &str,
+    limit: usize,
+    page_url: Option<&str>,
+) -> Result<MessagesPage> {
+    let url = match page_url {
+        Some(u) => with_page_size(u, limit),
+        None => {
+            let base = client.chat_service_url();
+            format!(
+                "{}/v1/users/ME/conversations/{}/messages?pageSize={}",
+                base, chat_id, limit
+            )
+        }
+    };
 
     tracing::debug!("Reading messages from {}", url);
     let resp = client.chat_get(&url).await?;
@@ -327,8 +435,19 @@ pub async fn read_messages_data(
         if !msgtype.contains("Text") && !msgtype.contains("RichText") {
             continue;
         }
+        // OstMac om-conv: skip media payloads. RichText/Media_CallRecording
+        // strips to "TitlePlay" fragments and RichText/Media_CallTranscript
+        // to raw JSON; neither is a readable bubble (see task-0011).
+        if msgtype.contains("Media_") {
+            continue;
+        }
 
-        let sender = msg.im_display_name.as_deref().unwrap_or("?").to_string();
+        let sender = msg
+            .im_display_name
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or("?")
+            .to_string();
         let time = msg
             .original_arrival_time
             .as_deref()
@@ -338,16 +457,332 @@ pub async fn read_messages_data(
         let content = msg.content.as_deref().unwrap_or("");
         let text = strip_html(content);
 
-        if text.trim().is_empty() {
+        // OstMac om-richmedia: image-only bubbles strip to "" but are
+        // real messages — keep them (the embedder mines `<img>` from raw).
+        if text.trim().is_empty() && !has_image(content) {
             continue;
         }
 
+        // OstMac: keep the server id so embedders can match realtime edits.
+        let id = msg.id.as_deref().filter(|s| !s.is_empty()).map(String::from);
+        let id = id.unwrap_or_else(|| format!("{}@{}", time, sender));
         result.push(MessageInfo {
+            id,
             sender,
             timestamp: time,
             content: text.trim().to_string(),
+            raw: content.to_string(),
         });
     }
 
-    Ok(result)
+    let backward_link = body.metadata.and_then(|m| m.backward_link);
+    Ok(MessagesPage {
+        messages: result,
+        backward_link,
+    })
+}
+
+/// True when raw HTML carries an `<img` tag (case-insensitive).
+/// Image-only messages strip to empty text but must survive filtering.
+fn has_image(html: &str) -> bool {
+    html.as_bytes()
+        .windows(4)
+        .any(|w| w.eq_ignore_ascii_case(b"<img"))
+}
+
+/// Rewrite the `pageSize=` query value so a followed `backwardLink` honors
+/// the caller's limit. No-op when the marker is absent.
+fn with_page_size(url: &str, limit: usize) -> String {
+    const MARK: &str = "pageSize=";
+    let Some(start) = url.find(MARK) else {
+        return url.to_string();
+    };
+    let val_start = start + MARK.len();
+    let val_end = url[val_start..]
+        .find(|c: char| !c.is_ascii_digit())
+        .map(|i| val_start + i)
+        .unwrap_or(url.len());
+    format!("{}{}{}", &url[..val_start], limit, &url[val_end..])
+}
+
+// ---------------------------------------------------------------------------
+// Chat list actions: mute, hide, folders
+// ---------------------------------------------------------------------------
+//
+// Mute: the per-user conversation property `alerts` on the chat service
+// (`"false"` = muted, `"true"` = notify), the same property the chat list
+// returns under `properties.alerts`. Hide: Graph v1.0
+// `POST /chats/{id}/hideForUser` / `unhideForUser`. Folders: the chat
+// service aggregator's `conversationFolders` (read-only here), which needs
+// an AAD token for `https://chatsvcagg.teams.microsoft.com`.
+
+/// PUT target for one conversation's `alerts` property.
+pub fn alerts_url(base: &str, chat_id: &str) -> String {
+    format!(
+        "{}/v1/users/ME/conversations/{}/properties?name=alerts",
+        base, chat_id
+    )
+}
+
+/// PUT body: muted chats carry `"false"` (the server stores strings).
+pub fn alerts_body(muted: bool) -> serde_json::Value {
+    serde_json::json!({ "alerts": if muted { "false" } else { "true" } })
+}
+
+/// Muted state from a conversation's `properties` object: `Some(true)`
+/// for `alerts: "false"`, `Some(false)` for `"true"`, None when absent.
+pub fn alerts_muted(properties: &serde_json::Value) -> Option<bool> {
+    match properties.get("alerts")?.as_str()?.trim().to_ascii_lowercase().as_str() {
+        "false" => Some(true),
+        "true" => Some(false),
+        _ => None,
+    }
+}
+
+/// Mute or unmute one chat for the signed-in user.
+pub async fn set_chat_muted_with_client(client: &TeamsClient, chat_id: &str, muted: bool) -> Result<()> {
+    let id = chat_id.trim();
+    if id.is_empty() {
+        bail!("empty chat_id");
+    }
+    let url = alerts_url(&client.chat_service_url(), id);
+    client.chat_put(&url, &alerts_body(muted)).await?;
+    Ok(())
+}
+
+/// Graph path for hiding (`hideForUser`) or showing (`unhideForUser`).
+pub fn hide_chat_path(chat_id: &str, hidden: bool) -> String {
+    let verb = if hidden { "hideForUser" } else { "unhideForUser" };
+    format!("/chats/{}/{}", chat_id.trim(), verb)
+}
+
+/// Graph body naming the user the chat is hidden for.
+pub fn hide_chat_body(user_id: &str, tenant_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "user": {
+            "@odata.type": "#microsoft.graph.teamworkUserIdentity",
+            "id": user_id.trim(),
+            "tenantId": tenant_id.trim(),
+        }
+    })
+}
+
+/// Hide or unhide one chat for the signed-in user (`user_id` = Entra
+/// object id, `tenant_id` = home tenant).
+pub async fn set_chat_hidden_with_client(
+    client: &TeamsClient,
+    chat_id: &str,
+    user_id: &str,
+    tenant_id: &str,
+    hidden: bool,
+) -> Result<()> {
+    if chat_id.trim().is_empty() {
+        bail!("empty chat_id");
+    }
+    if user_id.trim().is_empty() || tenant_id.trim().is_empty() {
+        bail!("missing user identity");
+    }
+    client
+        .graph_post(&hide_chat_path(chat_id, hidden), &hide_chat_body(user_id, tenant_id))
+        .await?;
+    Ok(())
+}
+
+/// Chat service aggregator resource for folder reads.
+pub const CHATSVCAGG_SCOPE: &str = "https://chatsvcagg.teams.microsoft.com/.default";
+
+/// Folder list URL (system folders included so Favorites comes back).
+pub fn conversation_folders_url() -> String {
+    "https://teams.microsoft.com/api/csa/api/v1/teams/users/me/conversationFolders?supportsAdditionalSystemGeneratedFolders=true&supportsSliceItems=true".to_string()
+}
+
+/// Server folder types that are views, not folders a chat is moved into.
+pub const SYSTEM_FOLDER_TYPES: &[&str] = &[
+    "RecentChats",
+    "TeamsAndChannels",
+    "QuickViews",
+    "MutedChats",
+    "MeetingChats",
+    "EngageCommunities",
+];
+
+/// One chat folder from the server: Favorites and user folders.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversationFolder {
+    pub id: String,
+    pub name: String,
+    pub folder_type: String,
+    /// Conversation ids in folder order (chats and channels alike).
+    pub item_ids: Vec<String>,
+}
+
+/// Parse a `conversationFolders` payload: deleted and system folders
+/// dropped, blank ids dropped, `conversationFolderOrder` order first
+/// (folders it omits keep payload order after it).
+pub fn parse_conversation_folders(v: &serde_json::Value) -> Vec<ConversationFolder> {
+    let mut out: Vec<ConversationFolder> = Vec::new();
+    for f in v.get("conversationFolders").and_then(|x| x.as_array()).into_iter().flatten() {
+        let s = |k: &str| f.get(k).and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
+        let (id, folder_type) = (s("id"), s("folderType"));
+        if id.is_empty() || f.get("isDeleted").and_then(|x| x.as_bool()).unwrap_or(false) {
+            continue;
+        }
+        if SYSTEM_FOLDER_TYPES.iter().any(|t| t.eq_ignore_ascii_case(&folder_type)) {
+            continue;
+        }
+        let mut name = s("name");
+        if name.is_empty() {
+            name = folder_type.clone();
+        }
+        let item_ids = f
+            .get("conversationFolderItems")
+            .and_then(|x| x.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|i| i.get("conversationId").and_then(|x| x.as_str()))
+            .map(|x| x.trim().to_string())
+            .filter(|x| !x.is_empty())
+            .collect();
+        out.push(ConversationFolder { id, name, folder_type, item_ids });
+    }
+    let order: Vec<&str> = v
+        .get("conversationFolderOrder")
+        .and_then(|x| x.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|x| x.as_str())
+        .collect();
+    out.sort_by_key(|f| order.iter().position(|o| *o == f.id).unwrap_or(usize::MAX));
+    out
+}
+
+/// Read the signed-in user's chat folders with a chatsvcagg bearer token.
+pub async fn conversation_folders_data(bearer: &str) -> Result<Vec<ConversationFolder>> {
+    if bearer.trim().is_empty() {
+        bail!("no chat service aggregator token");
+    }
+    let url = conversation_folders_url();
+    let resp = reqwest::Client::new()
+        .get(&url)
+        .bearer_auth(bearer)
+        .header("x-ms-client-version", "1415/24080616421")
+        .timeout(std::time::Duration::from_secs(30))
+        .send()
+        .await
+        .context("conversationFolders GET failed")?;
+    let status = resp.status();
+    if !status.is_success() {
+        bail!("conversationFolders GET: {}", status);
+    }
+    let v: serde_json::Value = resp.json().await.context("Failed to parse conversationFolders")?;
+    Ok(parse_conversation_folders(&v))
+}
+
+#[cfg(test)]
+mod chatmenu_tests {
+    use super::*;
+
+    #[test]
+    fn alerts_request_shape() {
+        assert_eq!(
+            alerts_url("https://h", "19:a@thread.v2"),
+            "https://h/v1/users/ME/conversations/19:a@thread.v2/properties?name=alerts"
+        );
+        assert_eq!(alerts_body(true), serde_json::json!({"alerts": "false"}));
+        assert_eq!(alerts_body(false), serde_json::json!({"alerts": "true"}));
+        assert_eq!(alerts_muted(&serde_json::json!({"alerts": "false"})), Some(true));
+        assert_eq!(alerts_muted(&serde_json::json!({"alerts": "True"})), Some(false));
+        assert_eq!(alerts_muted(&serde_json::json!({"favorite": "true"})), None);
+    }
+
+    #[test]
+    fn hide_request_shape() {
+        assert_eq!(hide_chat_path(" 19:a@thread.v2 ", true), "/chats/19:a@thread.v2/hideForUser");
+        assert_eq!(hide_chat_path("19:a@thread.v2", false), "/chats/19:a@thread.v2/unhideForUser");
+        let b = hide_chat_body("oid-1", "tid-2");
+        assert_eq!(b["user"]["id"], "oid-1");
+        assert_eq!(b["user"]["tenantId"], "tid-2");
+        assert_eq!(b["user"]["@odata.type"], "#microsoft.graph.teamworkUserIdentity");
+    }
+
+    #[test]
+    fn folders_parse_drops_system_and_deleted_and_orders() {
+        let v = serde_json::json!({
+            "conversationFolderOrder": ["f-work", "f-fav", "f-recent"],
+            "conversationFolders": [
+                {"id": "f-fav", "name": "Favorites", "folderType": "Favorites",
+                 "conversationFolderItems": [{"conversationId": "19:a@thread.v2"}, {"conversationId": " "}]},
+                {"id": "f-recent", "name": "Chats", "folderType": "RecentChats", "conversationFolderItems": []},
+                {"id": "f-gone", "name": "Old", "folderType": "UserCreated", "isDeleted": true},
+                {"id": "f-work", "name": "Work", "folderType": "UserCreated",
+                 "conversationFolderItems": [{"conversationId": "19:b@unq.gbl.spaces"}]},
+                {"id": "", "name": "Blank", "folderType": "UserCreated"}
+            ]
+        });
+        let f = parse_conversation_folders(&v);
+        assert_eq!(f.iter().map(|x| x.id.as_str()).collect::<Vec<_>>(), ["f-work", "f-fav"]);
+        assert_eq!(f[0].item_ids, ["19:b@unq.gbl.spaces"]);
+        assert_eq!(f[1].item_ids, ["19:a@thread.v2"]);
+        assert!(parse_conversation_folders(&serde_json::json!({})).is_empty());
+        assert!(conversation_folders_url().contains("/conversationFolders?"));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn edit_url_and_body_shape() {
+        assert_eq!(
+            message_url("https://h", "19:chat", "123"),
+            "https://h/v1/users/ME/conversations/19:chat/messages/123"
+        );
+        let b = edit_message_body("123", "a<b>&\"'");
+        assert_eq!(b["messagetype"], "RichText/Html");
+        assert_eq!(b["contenttype"], "text");
+        assert_eq!(b["skypeeditedid"], "123");
+        assert_eq!(
+            b["content"],
+            "<p>a&lt;b&gt;&amp;&quot;&#39;</p>"
+        );
+    }
+
+    #[test]
+    fn image_tag_detection() {
+        assert!(has_image(r#"<p><img src="https://h/v1/objects/0/views/imgo"></p>"#));
+        assert!(has_image(r#"<IMG SRC="https://h/x.png">"#));
+        assert!(has_image(r#"<p>hi <img
+src="x">"#));
+        assert!(!has_image("<p>plain text</p>"));
+        assert!(!has_image("<p>image word, no tag</p>"));
+        assert!(!has_image(""));
+    }
+
+    #[test]
+    fn page_size_rewrite_mid_and_end() {
+        assert_eq!(
+            with_page_size("https://h/m?pageSize=2&view=x", 50),
+            "https://h/m?pageSize=50&view=x"
+        );
+        assert_eq!(
+            with_page_size("https://h/m?view=x&pageSize=2", 50),
+            "https://h/m?view=x&pageSize=50"
+        );
+        assert_eq!(with_page_size("https://h/m", 50), "https://h/m");
+    }
+
+    #[test]
+    fn metadata_backward_link_parses() {
+        let body: MessagesResponse = serde_json::from_str(
+            r#"{"messages":[],"_metadata":{"backwardLink":"https://h/back"},"tenantId":"t"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            body.metadata.unwrap().backward_link.as_deref(),
+            Some("https://h/back")
+        );
+        let bare: MessagesResponse = serde_json::from_str(r#"{"messages":[]}"#).unwrap();
+        assert!(bare.metadata.is_none());
+    }
 }
