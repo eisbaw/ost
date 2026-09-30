@@ -5,6 +5,7 @@ pub mod client;
 mod graph;
 mod me;
 mod presence;
+pub mod tags;
 mod teams;
 
 use anyhow::Result;
