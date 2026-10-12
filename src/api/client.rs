@@ -112,6 +112,33 @@ impl TeamsClient {
         check_response(resp, &url).await
     }
 
+    /// PATCH with `If-Match` + `Prefer: return=representation` (Planner
+    /// task updates: the etag guards the write, Prefer asks for the
+    /// updated task back instead of 204-empty).
+    pub async fn graph_patch_etag(
+        &self,
+        path: &str,
+        etag: &str,
+        body: &serde_json::Value,
+    ) -> Result<reqwest::Response> {
+        let token = self.graph_token()?;
+        let url = format!("{}{}", GRAPH_BASE, path);
+        tracing::debug!("Graph PATCH {} (If-Match)", url);
+
+        let resp = self
+            .http
+            .patch(&url)
+            .bearer_auth(&token)
+            .header("If-Match", etag)
+            .header("Prefer", "return=representation")
+            .json(body)
+            .send()
+            .await
+            .with_context(|| format!("Graph PATCH {} failed", url))?;
+
+        check_response(resp, &url).await
+    }
+
     /// GET request to Teams/Skype API (X-SkypeToken header).
     pub async fn teams_get(&self, url: &str) -> Result<reqwest::Response> {
         let token = self.skype_token()?;
