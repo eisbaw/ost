@@ -112,6 +112,107 @@ impl TeamsClient {
         check_response(resp, &url).await
     }
 
+    /// PUT bytes to Microsoft Graph API (drive upload). `content_type` is
+    /// the file MIME; Graph accepts `application/octet-stream` for all.
+    pub async fn graph_put_bytes(
+        &self,
+        path: &str,
+        bytes: Vec<u8>,
+        content_type: &str,
+    ) -> Result<reqwest::Response> {
+        let token = self.graph_token()?;
+        let url = format!("{}{}", GRAPH_BASE, path);
+        tracing::debug!("Graph PUT {} ({} bytes)", url, bytes.len());
+
+        let resp = self
+            .http
+            .put(&url)
+            .bearer_auth(&token)
+            .header(reqwest::header::CONTENT_TYPE, content_type.to_string())
+            .body(bytes)
+            .send()
+            .await
+            .with_context(|| format!("Graph PUT {} failed", url))?;
+
+        check_response(resp, &url).await
+    }
+
+    /// PUT one resumable-upload fragment to a drive `uploadUrl`.
+    /// The session URL is pre-authenticated: no bearer header (Graph
+    /// rejects authed fragment PUTs). `start`/`end` are inclusive.
+    /// OstMac (om-i4-bigup): >4 MB uploads.
+    pub async fn drive_session_put(
+        &self,
+        upload_url: &str,
+        chunk: &[u8],
+        start: u64,
+        end: u64,
+        total: u64,
+    ) -> Result<reqwest::Response> {
+        tracing::debug!(
+            "Session PUT bytes {}-{}/{} ({} bytes)",
+            start,
+            end,
+            total,
+            chunk.len()
+        );
+        let resp = self
+            .http
+            .put(upload_url)
+            .header(
+                reqwest::header::CONTENT_RANGE,
+                format!("bytes {}-{}/{}", start, end, total),
+            )
+            .header(reqwest::header::CONTENT_LENGTH, chunk.len())
+            .body(chunk.to_vec())
+            .send()
+            .await
+            .with_context(|| format!("Session PUT bytes {}-{}/{} failed", start, end, total))?;
+        check_response(resp, upload_url).await
+    }
+
+    /// PATCH request to Microsoft Graph API (Bearer [REDACTED] with Graph token).
+    /// DriveItem rename/move PATCH `name` / `parentReference`.
+    /// (Same helper as #12's `graph_patch`: merging both keeps one copy.)
+    pub async fn graph_patch(
+        &self,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> Result<reqwest::Response> {
+        let token = self.graph_token()?;
+        let url = format!("{}{}", GRAPH_BASE, path);
+        tracing::debug!("Graph PATCH {}", url);
+
+        let resp = self
+            .http
+            .patch(&url)
+            .bearer_auth(&token)
+            .json(body)
+            .send()
+            .await
+            .with_context(|| format!("Graph PATCH {} failed", url))?;
+
+        check_response(resp, &url).await
+    }
+
+    /// DELETE request to Microsoft Graph API (Bearer [REDACTED] with Graph token).
+    /// DriveItem delete removes the item (204, no body).
+    pub async fn graph_delete(&self, path: &str) -> Result<reqwest::Response> {
+        let token = self.graph_token()?;
+        let url = format!("{}{}", GRAPH_BASE, path);
+        tracing::debug!("Graph DELETE {}", url);
+
+        let resp = self
+            .http
+            .delete(&url)
+            .bearer_auth(&token)
+            .send()
+            .await
+            .with_context(|| format!("Graph DELETE {} failed", url))?;
+
+        check_response(resp, &url).await
+    }
+
     /// GET request to Teams/Skype API (X-SkypeToken header).
     pub async fn teams_get(&self, url: &str) -> Result<reqwest::Response> {
         let token = self.skype_token()?;
