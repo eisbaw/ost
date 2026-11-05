@@ -77,3 +77,53 @@ pub async fn set_presence(status: &str) -> Result<()> {
     println!("Presence set to: {}", status);
     Ok(())
 }
+
+/// Presence service audience and front door.
+const PRESENCE_SCOPE: &str = "https://presence.teams.microsoft.com/.default";
+const PRESENCE_URL: &str = "https://presence.teams.microsoft.com";
+
+/// Tell the presence service this endpoint (the Trouter `epid`) is online.
+///
+/// Without an active endpoint the user shows as Offline, and the calling
+/// service does not offer incoming calls to it: they ring for the whole
+/// timeout and go to voicemail. Teams clients publish their endpoint when
+/// they connect and keep it fresh while they run.
+pub async fn publish_endpoint(http: &reqwest::Client, epid: &str) -> Result<()> {
+    let token = crate::auth::oauth::access_token_for(PRESENCE_SCOPE).await?;
+    let body = endpoint_body(epid);
+    let resp = http
+        .put(format!("{PRESENCE_URL}/v1/me/endpoints/"))
+        .bearer_auth(&token)
+        .json(&body)
+        .send()
+        .await
+        .context("Presence endpoint PUT failed to send")?;
+    let status = resp.status();
+    if !status.is_success() {
+        bail!("Presence endpoint PUT failed: HTTP {status}");
+    }
+    tracing::debug!("Presence endpoint published ({status})");
+    Ok(())
+}
+
+fn endpoint_body(epid: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": epid,
+        "activity": "Available",
+        "availability": "Available",
+        "deviceType": "Desktop",
+    })
+}
+
+#[cfg(test)]
+mod endpoint_tests {
+    use super::endpoint_body;
+
+    #[test]
+    fn endpoint_body_names_the_trouter_endpoint() {
+        let b = endpoint_body("2f951868-95ad-4039-a816-592dbfc52786");
+        assert_eq!(b["id"], "2f951868-95ad-4039-a816-592dbfc52786");
+        assert_eq!(b["availability"], "Available");
+        assert_eq!(b["deviceType"], "Desktop");
+    }
+}

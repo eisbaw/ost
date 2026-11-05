@@ -97,6 +97,24 @@ async fn acquire_graph_token(
     ))
 }
 
+/// Mint a short-lived access token for another audience from the stored
+/// refresh token, without storing it (for services used now and then).
+pub async fn access_token_for(scope: &str) -> Result<String> {
+    let config = Config::load()?;
+    let refresh_token_str = config
+        .get_refresh_token()
+        .context("Not signed in (no refresh token)")?;
+    let client = build_client(&AuthConfig::default())?;
+    let token_response = client
+        .exchange_refresh_token(&RefreshToken::new(refresh_token_str))
+        .add_scope(Scope::new(scope.to_string()))
+        .add_scope(Scope::new("offline_access".to_string()))
+        .request_async(oauth2::reqwest::async_http_client)
+        .await
+        .with_context(|| format!("Failed to acquire a token for {scope}"))?;
+    Ok(token_response.access_token().secret().to_string())
+}
+
 /// Refresh the AAD access token using a stored refresh_token, then
 /// re-exchange for a Skype token. Returns Ok(true) if refresh succeeded.
 pub async fn refresh() -> Result<bool> {

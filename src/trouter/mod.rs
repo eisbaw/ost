@@ -14,6 +14,9 @@ use tokio::time;
 use crate::calling;
 use crate::config::Config;
 
+/// How often the presence endpoint is republished while connected.
+const PRESENCE_REFRESH_SECS: u64 = 120;
+
 /// Reason the inner connection loop exited.
 enum DisconnectReason {
     /// Clean shutdown (Ctrl+C). Do not reconnect.
@@ -120,10 +123,20 @@ async fn connect_and_run_inner() -> Result<DisconnectReason> {
         }
     }
 
+    // 5b. Publish this endpoint to the presence service. Users with no
+    //     active endpoint show as Offline and are never offered calls.
+    if let Err(e) = crate::api::presence::publish_endpoint(&http, &epid).await {
+        tracing::warn!("Presence endpoint publish failed: {:#}", e);
+    }
+
     // 6. Event loop: recv frames, send heartbeat, re-register before TTL,
     //    force reconnect after session max age.
     let connected_at = Instant::now();
     let mut heartbeat = time::interval(Duration::from_secs(30));
+    // The presence service drops endpoints that stop reporting within a few
+    // minutes; republish well inside that window.
+    let mut presence_tick = time::interval(Duration::from_secs(PRESENCE_REFRESH_SECS));
+    presence_tick.tick().await; // first publish happened above
     heartbeat.tick().await; // skip first immediate tick
 
     // Re-register 30s before TTL expires.
@@ -154,6 +167,14 @@ async fn connect_and_run_inner() -> Result<DisconnectReason> {
                         break DisconnectReason::Error(e.context("WebSocket recv error"));
                     }
                 }
+            }
+            _ = presence_tick.tick() => {
+                let (h, ep) = (http.clone(), epid.clone());
+                tokio::spawn(async move {
+                    if let Err(e) = crate::api::presence::publish_endpoint(&h, &ep).await {
+                        tracing::warn!("Presence refresh failed: {:#}", e);
+                    }
+                });
             }
             _ = heartbeat.tick() => {
                 if let Err(e) = ws.send_text("2::").await {
