@@ -242,7 +242,7 @@ just fmt      # Format code
 
 ## Configuration
 
-Tokens are stored in `~/.config/teams-cli/config.toml` with restricted permissions (0600).
+Tokens are stored in the desktop keyring (Secret Service, e.g. GNOME Keyring or KWallet), so `~/.config/teams-cli/config.toml` holds only non-secret settings. Without a keyring (or with `OST_NO_KEYRING=1`), tokens are written to that file, created owner-only (0600).
 
 ## Documentation
 
