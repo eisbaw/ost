@@ -4,7 +4,7 @@ mod chat;
 pub mod client;
 mod graph;
 mod me;
-mod presence;
+pub mod presence;
 mod teams;
 
 use anyhow::Result;
