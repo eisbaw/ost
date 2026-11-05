@@ -30,6 +30,16 @@ pub struct Config {
 }
 
 impl Config {
+    /// The signed-in tenant: the recorded one, or failing that the `tid` of
+    /// the stored access token (configs written before it was recorded).
+    pub fn tenant_id(&self) -> Option<String> {
+        self.tenant_id.clone().or_else(|| {
+            self.access_token
+                .as_ref()
+                .and_then(|t| tenant_id_from_jwt(&t.token))
+        })
+    }
+
     /// Get config directory path
     fn config_dir() -> Result<PathBuf> {
         let proj_dirs = ProjectDirs::from("com", "teams-cli", "teams-cli")
@@ -123,6 +133,12 @@ impl TokenStore for Config {
     }
 
     fn set_access_token(&mut self, token: String, expires_in: Option<u64>) {
+        // Calling needs the tenant id, and nothing else records it: take it
+        // from the token's `tid` claim each time the token is stored, so both
+        // a fresh login and a refresh keep it current.
+        if let Some(tid) = tenant_id_from_jwt(&token) {
+            self.tenant_id = Some(tid);
+        }
         self.access_token = Some(StoredToken::new(token, expires_in));
     }
 
@@ -142,5 +158,72 @@ impl TokenStore for Config {
         self.ic3_token = None;
         self.recorder_token = None;
         self.region_gtms = None;
+    }
+}
+
+/// Read the `tid` (tenant id) claim from a JWT without verifying it.
+///
+/// The token was just issued to us by Azure AD over TLS; this only reads a
+/// routing value from it, and never trusts it for authorization.
+fn tenant_id_from_jwt(token: &str) -> Option<String> {
+    use base64::Engine;
+    let payload = token.split('.').nth(1)?;
+    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload.trim_end_matches('='))
+        .ok()?;
+    let json: serde_json::Value = serde_json::from_slice(&decoded).ok()?;
+    let tid = json.get("tid")?.as_str()?;
+    // A tenant id is a GUID; refuse anything else rather than store junk.
+    let is_guid = tid.len() == 36
+        && tid.chars().enumerate().all(|(i, c)| {
+            matches!(i, 8 | 13 | 18 | 23) == (c == '-') && (c == '-' || c.is_ascii_hexdigit())
+        });
+    is_guid.then(|| tid.to_string())
+}
+
+#[cfg(test)]
+mod tenant_id_tests {
+    use super::*;
+    use base64::Engine;
+
+    fn jwt_with(payload: &str) -> String {
+        let enc = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        format!(
+            "{}.{}.sig",
+            enc.encode(b"{\"alg\":\"none\"}"),
+            enc.encode(payload)
+        )
+    }
+
+    #[test]
+    fn reads_tid_claim() {
+        let t = jwt_with(r#"{"tid":"2716d134-5614-4856-a48d-2002edd9a570","oid":"x"}"#);
+        assert_eq!(
+            tenant_id_from_jwt(&t).as_deref(),
+            Some("2716d134-5614-4856-a48d-2002edd9a570")
+        );
+    }
+
+    #[test]
+    fn rejects_missing_or_malformed_tid() {
+        assert_eq!(tenant_id_from_jwt(&jwt_with(r#"{"oid":"x"}"#)), None);
+        assert_eq!(
+            tenant_id_from_jwt(&jwt_with(r#"{"tid":"../../etc"}"#)),
+            None
+        );
+        assert_eq!(tenant_id_from_jwt("not-a-jwt"), None);
+    }
+
+    #[test]
+    fn set_access_token_records_tenant() {
+        let mut c = Config::default();
+        c.set_access_token(
+            jwt_with(r#"{"tid":"09a28c80-30f0-4c4d-98ba-0f7f8d19b780"}"#),
+            Some(3600),
+        );
+        assert_eq!(
+            c.tenant_id.as_deref(),
+            Some("09a28c80-30f0-4c4d-98ba-0f7f8d19b780")
+        );
     }
 }
