@@ -141,10 +141,10 @@ pub async fn run_call_test(
     let is_1to1_call = echo || callee_mri.is_some();
 
     // Get tenant ID
-    let tenant_id = config
-        .tenant_id
-        .as_deref()
+    let tenant_id_owned = config
+        .tenant_id()
         .context("No tenant_id in config. Run `teams-cli login` first.")?;
+    let tenant_id = tenant_id_owned.as_str();
 
     // Fetch user profile for display name
     let (display_name, mail) = match &graph_token {
