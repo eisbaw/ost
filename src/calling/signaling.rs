@@ -49,6 +49,46 @@ pub struct ConversationCallParams<'a> {
     /// OID (object ID) extracted from caller MRI, e.g. the GUID part of "8:orgid:{guid}".
     pub caller_oid: &'a str,
     pub tenant_id: &'a str,
+    /// Set for a scheduled / Meet now meeting join; `None` keeps the
+    /// ad-hoc group-call shape (reply chain null, caller as organizer).
+    pub meeting: Option<MeetingCoordinates<'a>>,
+}
+
+/// Where a meeting's call lives. The conversation service keys a group
+/// call by thread + reply-chain message id under the meeting organizer
+/// (Graph `chatInfo` + `organizerMeetingInfo`; Teams traffic carries
+/// `groupChat.messageId "0"` and the organizer's `meetingInfo`). A
+/// meeting-thread join sent with a null message id and the caller as
+/// organizer lands in a separate, empty call on that thread.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MeetingCoordinates<'a> {
+    /// Reply-chain root of the meeting call ("0" for meetings).
+    pub message_id: &'a str,
+    /// Organizer AAD object id (join link `context.Oid`); `None` falls
+    /// back to the caller.
+    pub organizer_oid: Option<&'a str>,
+    /// Organizer tenant (join link `context.Tid`); `None` falls back to
+    /// the caller's tenant.
+    pub tenant_id: Option<&'a str>,
+}
+
+/// `groupChat` of a conversation request: the meeting's reply chain for
+/// a meeting join, null for an ad-hoc group call.
+fn group_chat_value(params: &ConversationCallParams<'_>) -> serde_json::Value {
+    serde_json::json!({
+        "threadId": params.thread_id,
+        "messageId": params.meeting.map(|m| m.message_id)
+    })
+}
+
+/// `meetingInfo` of a join: the meeting organizer (and tenant) when the
+/// join names one, else the caller.
+fn meeting_info_value(params: &ConversationCallParams<'_>) -> serde_json::Value {
+    let m = params.meeting;
+    serde_json::json!({
+        "organizerId": m.and_then(|m| m.organizer_oid).unwrap_or(params.caller_oid),
+        "tenantId": m.and_then(|m| m.tenant_id).unwrap_or(params.tenant_id)
+    })
 }
 
 /// Build a Trouter callback URL for a specific path.
@@ -71,20 +111,15 @@ pub(crate) fn trouter_callback(trouter_surl: &str, endpoint_id: &str, path: &str
     )
 }
 
-/// Phase 1: Create a conversation by POSTing to /api/v2/epconv.
-///
-/// Returns the conversationController URL from the response.
-pub async fn create_conversation(
-    http: &reqwest::Client,
-    epconv_url: &str,
-    params: &ConversationCallParams<'_>,
-) -> Result<ConversationCreated> {
+/// The phase 1 body (pure, no network). A meeting join names the
+/// meeting's call (`groupChat` reply chain + organizer `meetingInfo`).
+pub fn create_conversation_payload(params: &ConversationCallParams<'_>) -> serde_json::Value {
     let tc = |path: &str| trouter_callback(params.trouter_surl, params.endpoint_id, path);
     let cause_id = &params.message_id[..8.min(params.message_id.len())];
 
     // Note: conversationRequest contains only subject/roster/properties/links.
     // Other fields (groupChat, participants, etc.) are siblings, not nested inside.
-    let payload = serde_json::json!({
+    serde_json::json!({
         "conversationRequest": {
             "subject": null,
             "roster": {
@@ -107,10 +142,7 @@ pub async fn create_conversation(
             }
         },
         "groupContext": null,
-        "groupChat": {
-            "threadId": params.thread_id,
-            "messageId": null
-        },
+        "groupChat": group_chat_value(params),
         "participants": {
             "from": {
                 "id": params.caller_mri,
@@ -125,7 +157,11 @@ pub async fn create_conversation(
         "endpointCapabilities": 73463,
         "clientEndpointCapabilities": 9336554,
         "endpointMetadata": { "holographicCapabilities": 3 },
-        "meetingInfo": null,
+        "meetingInfo": if params.meeting.is_some() {
+            meeting_info_value(params)
+        } else {
+            serde_json::Value::Null
+        },
         "endpointState": {
             "endpointStateSequenceNumber": 0,
             "endpointProperties": {
@@ -138,7 +174,18 @@ pub async fn create_conversation(
             "ecsEtag": "\"0\"",
             "causeId": cause_id
         }
-    });
+    })
+}
+
+/// Phase 1: Create a conversation by POSTing to /api/v2/epconv.
+///
+/// Returns the conversationController URL from the response.
+pub async fn create_conversation(
+    http: &reqwest::Client,
+    epconv_url: &str,
+    params: &ConversationCallParams<'_>,
+) -> Result<ConversationCreated> {
+    let payload = create_conversation_payload(params);
 
     tracing::info!("Phase 1: POST {} (create conversation)", epconv_url);
     tracing::debug!(
@@ -362,10 +409,7 @@ pub fn join_conversation_payload_with_modalities(
             }
         },
         "groupContext": null,
-        "groupChat": {
-            "threadId": params.thread_id,
-            "messageId": null
-        },
+        "groupChat": group_chat_value(params),
         "participants": {
             "from": {
                 "id": params.caller_mri,
@@ -381,10 +425,7 @@ pub fn join_conversation_payload_with_modalities(
         "endpointCapabilities": 73463,
         "clientEndpointCapabilities": 9336554,
         "endpointMetadata": { "holographicCapabilities": 3 },
-        "meetingInfo": {
-            "organizerId": params.caller_oid,
-            "tenantId": params.tenant_id
-        },
+        "meetingInfo": meeting_info_value(params),
         "endpointState": {
             "endpointStateSequenceNumber": 0,
             "endpointProperties": {
@@ -1347,7 +1388,59 @@ mod tests {
             message_id: "0123456789abcdef",
             caller_oid: "00000000-0000-0000-0000-000000000001",
             tenant_id: "00000000-0000-0000-0000-0000000000aa",
+            meeting: None,
         }
+    }
+
+    #[test]
+    fn meeting_join_names_the_meetings_call() {
+        let params = test_params();
+        let adhoc = create_conversation_payload(&params);
+        assert!(adhoc["groupChat"]["messageId"].is_null());
+        assert!(adhoc["meetingInfo"].is_null());
+
+        let meeting = ConversationCallParams {
+            meeting: Some(MeetingCoordinates {
+                message_id: "0",
+                organizer_oid: Some("00000000-0000-0000-0000-000000000002"),
+                tenant_id: Some("00000000-0000-0000-0000-0000000000bb"),
+            }),
+            ..test_params()
+        };
+        let phase1 = create_conversation_payload(&meeting);
+        assert_eq!(phase1["groupChat"]["threadId"], "19:meeting_test@thread.v2");
+        assert_eq!(phase1["groupChat"]["messageId"], "0");
+        assert_eq!(
+            phase1["meetingInfo"]["organizerId"],
+            "00000000-0000-0000-0000-000000000002"
+        );
+        assert_eq!(
+            phase1["meetingInfo"]["tenantId"],
+            "00000000-0000-0000-0000-0000000000bb"
+        );
+
+        let join = join_conversation_payload_with_modalities(&meeting, "v=0\r\n", &["Audio"]);
+        assert_eq!(join["groupChat"]["messageId"], "0");
+        assert_eq!(
+            join["meetingInfo"]["organizerId"],
+            "00000000-0000-0000-0000-000000000002"
+        );
+
+        // Back to null when the join names no organizer.
+        let fallback = ConversationCallParams {
+            meeting: Some(MeetingCoordinates {
+                message_id: "0",
+                organizer_oid: None,
+                tenant_id: None,
+            }),
+            ..test_params()
+        };
+        let payload = create_conversation_payload(&fallback);
+        assert_eq!(payload["groupChat"]["messageId"], "0");
+        assert_eq!(
+            payload["meetingInfo"]["organizerId"],
+            "00000000-0000-0000-0000-000000000001"
+        );
     }
 
     #[test]
