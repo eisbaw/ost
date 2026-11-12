@@ -49,6 +49,46 @@ pub struct ConversationCallParams<'a> {
     /// OID (object ID) extracted from caller MRI, e.g. the GUID part of "8:orgid:{guid}".
     pub caller_oid: &'a str,
     pub tenant_id: &'a str,
+    /// Set for a scheduled / Meet now meeting join; `None` keeps the
+    /// ad-hoc group-call shape (reply chain null, caller as organizer).
+    pub meeting: Option<MeetingCoordinates<'a>>,
+}
+
+/// Where a meeting's call lives. The conversation service keys a group
+/// call by thread + reply-chain message id under the meeting organizer
+/// (Graph `chatInfo` + `organizerMeetingInfo`; Teams traffic carries
+/// `groupChat.messageId "0"` and the organizer's `meetingInfo`). A
+/// meeting-thread join sent with a null message id and the caller as
+/// organizer lands in a separate, empty call on that thread.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MeetingCoordinates<'a> {
+    /// Reply-chain root of the meeting call ("0" for meetings).
+    pub message_id: &'a str,
+    /// Organizer AAD object id (join link `context.Oid`); `None` falls
+    /// back to the caller.
+    pub organizer_oid: Option<&'a str>,
+    /// Organizer tenant (join link `context.Tid`); `None` falls back to
+    /// the caller's tenant.
+    pub tenant_id: Option<&'a str>,
+}
+
+/// `groupChat` of a conversation request: the meeting's reply chain for
+/// a meeting join, null for an ad-hoc group call.
+fn group_chat_value(params: &ConversationCallParams<'_>) -> serde_json::Value {
+    serde_json::json!({
+        "threadId": params.thread_id,
+        "messageId": params.meeting.map(|m| m.message_id)
+    })
+}
+
+/// `meetingInfo` of a join: the meeting organizer (and tenant) when the
+/// join names one, else the caller.
+fn meeting_info_value(params: &ConversationCallParams<'_>) -> serde_json::Value {
+    let m = params.meeting;
+    serde_json::json!({
+        "organizerId": m.and_then(|m| m.organizer_oid).unwrap_or(params.caller_oid),
+        "tenantId": m.and_then(|m| m.tenant_id).unwrap_or(params.tenant_id)
+    })
 }
 
 /// Build a Trouter callback URL for a specific path.
@@ -71,20 +111,15 @@ pub(crate) fn trouter_callback(trouter_surl: &str, endpoint_id: &str, path: &str
     )
 }
 
-/// Phase 1: Create a conversation by POSTing to /api/v2/epconv.
-///
-/// Returns the conversationController URL from the response.
-pub async fn create_conversation(
-    http: &reqwest::Client,
-    epconv_url: &str,
-    params: &ConversationCallParams<'_>,
-) -> Result<ConversationCreated> {
+/// The phase 1 body (pure, no network). A meeting join names the
+/// meeting's call (`groupChat` reply chain + organizer `meetingInfo`).
+pub fn create_conversation_payload(params: &ConversationCallParams<'_>) -> serde_json::Value {
     let tc = |path: &str| trouter_callback(params.trouter_surl, params.endpoint_id, path);
     let cause_id = &params.message_id[..8.min(params.message_id.len())];
 
     // Note: conversationRequest contains only subject/roster/properties/links.
     // Other fields (groupChat, participants, etc.) are siblings, not nested inside.
-    let payload = serde_json::json!({
+    serde_json::json!({
         "conversationRequest": {
             "subject": null,
             "roster": {
@@ -107,10 +142,7 @@ pub async fn create_conversation(
             }
         },
         "groupContext": null,
-        "groupChat": {
-            "threadId": params.thread_id,
-            "messageId": null
-        },
+        "groupChat": group_chat_value(params),
         "participants": {
             "from": {
                 "id": params.caller_mri,
@@ -125,7 +157,11 @@ pub async fn create_conversation(
         "endpointCapabilities": 73463,
         "clientEndpointCapabilities": 9336554,
         "endpointMetadata": { "holographicCapabilities": 3 },
-        "meetingInfo": null,
+        "meetingInfo": if params.meeting.is_some() {
+            meeting_info_value(params)
+        } else {
+            serde_json::Value::Null
+        },
         "endpointState": {
             "endpointStateSequenceNumber": 0,
             "endpointProperties": {
@@ -138,7 +174,18 @@ pub async fn create_conversation(
             "ecsEtag": "\"0\"",
             "causeId": cause_id
         }
-    });
+    })
+}
+
+/// Phase 1: Create a conversation by POSTing to /api/v2/epconv.
+///
+/// Returns the conversationController URL from the response.
+pub async fn create_conversation(
+    http: &reqwest::Client,
+    epconv_url: &str,
+    params: &ConversationCallParams<'_>,
+) -> Result<ConversationCreated> {
+    let payload = create_conversation_payload(params);
 
     tracing::info!("Phase 1: POST {} (create conversation)", epconv_url);
     tracing::debug!(
@@ -230,102 +277,41 @@ pub async fn join_conversation_with_sdp(
     params: &ConversationCallParams<'_>,
     sdp_offer: &str,
 ) -> Result<ConversationJoined> {
-    let tc = |path: &str| trouter_callback(params.trouter_surl, params.endpoint_id, path);
-    let cause_id = &params.message_id[..8.min(params.message_id.len())];
+    join_conversation_with_sdp_video(http, conversation_controller, params, sdp_offer, false).await
+}
 
-    // Same structure as phase 1: conversationRequest contains only
-    // subject/roster/properties/links. Other fields are siblings.
-    let payload = serde_json::json!({
-        "conversationRequest": {
-            "conversationType": null,
-            "subject": "",
-            "suppressDialout": true,
-            "roster": {
-                "type": "Delta",
-                "rosterUpdate": tc("conversation/rosterUpdate/")
-            },
-            "properties": {
-                "allowConversationWithoutHost": true,
-                "enableGroupCallEventMessages": true,
-                "enableGroupCallUpgradeMessage": false,
-                "enableGroupCallMeetupGeneration": true
-            },
-            "links": {
-                "conversationEnd": tc("conversation/conversationEnd/"),
-                "conversationUpdate": tc("conversation/conversationUpdate/"),
-                "localParticipantUpdate": tc("conversation/localParticipantUpdate/"),
-                "addParticipantSuccess": tc("conversation/addParticipantSuccess/"),
-                "addParticipantFailure": tc("conversation/addParticipantFailure/"),
-                "addModalitySuccess": tc("conversation/addModalitySuccess/"),
-                "addModalityFailure": tc("conversation/addModalityFailure/"),
-                "confirmUnmute": tc("conversation/confirmUnmute/"),
-                "receiveMessage": tc("conversation/receiveMessage/")
-            }
-        },
-        "groupContext": null,
-        "groupChat": {
-            "threadId": params.thread_id,
-            "messageId": null
-        },
-        "participants": {
-            "from": {
-                "id": params.caller_mri,
-                "displayName": params.caller_display_name,
-                "endpointId": params.endpoint_id,
-                "participantId": params.participant_id,
-                "languageId": "en-US"
-            },
-            "to": []
-        },
-        // Capability bitmasks captured from Teams web client traffic
-        "capabilities": null,
-        "endpointCapabilities": 73463,
-        "clientEndpointCapabilities": 9336554,
-        "endpointMetadata": { "holographicCapabilities": 3 },
-        "meetingInfo": {
-            "organizerId": params.caller_oid,
-            "tenantId": params.tenant_id
-        },
-        "endpointState": {
-            "endpointStateSequenceNumber": 0,
-            "endpointProperties": {
-                "preheatProperties": 1,
-                "additionalEndpointProperties": {
-                    "infoShownInReportMode": "FullInformation"
-                }
-            }
-        },
-        "callInvitation": {
-            "callModalities": ["Audio"],
-            "replaces": null,
-            "transferor": null,
-            "links": {
-                "progress": tc("call/progress/"),
-                "mediaAnswer": tc("call/mediaAnswer/"),
-                "acceptance": tc("call/acceptance/"),
-                "redirection": tc("call/redirection/"),
-                "end": tc("call/end/")
-            },
-            "clientContentForMediaController": {
-                "controlVideoStreaming": tc("call/controlVideoStreaming/"),
-                "csrcInfo": tc("call/csrcInfo/"),
-                "dominantSpeakerInfo": tc("call/dominantSpeakerInfo/")
-            },
-            "pstnContent": {
-                "emergencyCallCountry": "",
-                "platformName": "teams-cli",
-                "publicApiCall": false
-            },
-            "mediaContent": {
-                "contentType": "application/sdp",
-                "blob": sdp_offer
-            }
-        },
-        "debugContent": {
-            "ecsEtag": "\"0\"",
-            "causeId": cause_id
-        }
-    });
+/// Phase 2 with a modality choice: `video` joins with
+/// `["Audio","Video"]` call modalities (group call / meeting video),
+/// otherwise `["Audio"]` as [`join_conversation_with_sdp`]. The SDP
+/// offer must already carry the video m-line.
+pub async fn join_conversation_with_sdp_video(
+    http: &reqwest::Client,
+    conversation_controller: &str,
+    params: &ConversationCallParams<'_>,
+    sdp_offer: &str,
+    video: bool,
+) -> Result<ConversationJoined> {
+    join_conversation_with_modalities(
+        http,
+        conversation_controller,
+        params,
+        sdp_offer,
+        &accepted_call_modalities(video),
+    )
+    .await
+}
+
+/// Phase 2 with explicit `callModalities` (see [`join_call_modalities`]):
+/// a receive-capable join declares what it can take (video, screen
+/// share); the SDP direction says what it sends.
+pub async fn join_conversation_with_modalities(
+    http: &reqwest::Client,
+    conversation_controller: &str,
+    params: &ConversationCallParams<'_>,
+    sdp_offer: &str,
+    modalities: &[&str],
+) -> Result<ConversationJoined> {
+    let payload = join_conversation_payload_with_modalities(params, sdp_offer, modalities);
 
     tracing::info!("Phase 2: POST {} (join with SDP)", conversation_controller);
     tracing::debug!(
@@ -374,11 +360,155 @@ pub async fn join_conversation_with_sdp(
     })
 }
 
-/// Accept an incoming call by POSTing to the acceptance URL.
+/// The phase 2 join body (pure, no network): `callInvitation` carries
+/// [`accepted_call_modalities`]`(video)` and the SDP offer blob.
+pub fn join_conversation_payload(
+    params: &ConversationCallParams<'_>,
+    sdp_offer: &str,
+    video: bool,
+) -> serde_json::Value {
+    join_conversation_payload_with_modalities(params, sdp_offer, &accepted_call_modalities(video))
+}
+
+/// The phase 2 join body with explicit `callInvitation.callModalities`.
+pub fn join_conversation_payload_with_modalities(
+    params: &ConversationCallParams<'_>,
+    sdp_offer: &str,
+    modalities: &[&str],
+) -> serde_json::Value {
+    let tc = |path: &str| trouter_callback(params.trouter_surl, params.endpoint_id, path);
+    let cause_id = &params.message_id[..8.min(params.message_id.len())];
+
+    // Same structure as phase 1: conversationRequest contains only
+    // subject/roster/properties/links. Other fields are siblings.
+    serde_json::json!({
+        "conversationRequest": {
+            "conversationType": null,
+            "subject": "",
+            "suppressDialout": true,
+            "roster": {
+                "type": "Delta",
+                "rosterUpdate": tc("conversation/rosterUpdate/")
+            },
+            "properties": {
+                "allowConversationWithoutHost": true,
+                "enableGroupCallEventMessages": true,
+                "enableGroupCallUpgradeMessage": false,
+                "enableGroupCallMeetupGeneration": true
+            },
+            "links": {
+                "conversationEnd": tc("conversation/conversationEnd/"),
+                "conversationUpdate": tc("conversation/conversationUpdate/"),
+                "localParticipantUpdate": tc("conversation/localParticipantUpdate/"),
+                "addParticipantSuccess": tc("conversation/addParticipantSuccess/"),
+                "addParticipantFailure": tc("conversation/addParticipantFailure/"),
+                "addModalitySuccess": tc("conversation/addModalitySuccess/"),
+                "addModalityFailure": tc("conversation/addModalityFailure/"),
+                "confirmUnmute": tc("conversation/confirmUnmute/"),
+                "receiveMessage": tc("conversation/receiveMessage/")
+            }
+        },
+        "groupContext": null,
+        "groupChat": group_chat_value(params),
+        "participants": {
+            "from": {
+                "id": params.caller_mri,
+                "displayName": params.caller_display_name,
+                "endpointId": params.endpoint_id,
+                "participantId": params.participant_id,
+                "languageId": "en-US"
+            },
+            "to": []
+        },
+        // Capability bitmasks captured from Teams web client traffic
+        "capabilities": null,
+        "endpointCapabilities": 73463,
+        "clientEndpointCapabilities": 9336554,
+        "endpointMetadata": { "holographicCapabilities": 3 },
+        "meetingInfo": meeting_info_value(params),
+        "endpointState": {
+            "endpointStateSequenceNumber": 0,
+            "endpointProperties": {
+                "preheatProperties": 1,
+                "additionalEndpointProperties": {
+                    "infoShownInReportMode": "FullInformation"
+                }
+            }
+        },
+        "callInvitation": {
+            "callModalities": modalities,
+            "replaces": null,
+            "transferor": null,
+            "links": {
+                "progress": tc("call/progress/"),
+                "mediaAnswer": tc("call/mediaAnswer/"),
+                "acceptance": tc("call/acceptance/"),
+                "redirection": tc("call/redirection/"),
+                "end": tc("call/end/")
+            },
+            "clientContentForMediaController": {
+                "controlVideoStreaming": tc("call/controlVideoStreaming/"),
+                "csrcInfo": tc("call/csrcInfo/"),
+                "dominantSpeakerInfo": tc("call/dominantSpeakerInfo/")
+            },
+            "pstnContent": {
+                "emergencyCallCountry": "",
+                "platformName": "teams-cli",
+                "publicApiCall": false
+            },
+            "mediaContent": {
+                "contentType": "application/sdp",
+                "blob": sdp_offer
+            }
+        },
+        "debugContent": {
+            "ecsEtag": "\"0\"",
+            "causeId": cause_id
+        }
+    })
+}
+
+/// Modalities an answering endpoint accepts: audio only, or audio +
+/// video for a video answer (1:1 video calls).
+pub fn accepted_call_modalities(video: bool) -> Vec<&'static str> {
+    if video {
+        vec!["Audio", "Video"]
+    } else {
+        vec!["Audio"]
+    }
+}
+
+/// Modalities a live group call / meeting join declares: `Audio`, plus
+/// `Video` when it receives video (camera on or off: the SDP direction
+/// carries the camera), plus `ScreenViewer` when its offer carries a
+/// screen share receive line (as the 1:1 and echo call bodies declare).
+pub fn join_call_modalities(video: bool, screen_viewer: bool) -> Vec<&'static str> {
+    let mut m = vec!["Audio"];
+    if video {
+        m.push("Video");
+    }
+    if screen_viewer {
+        m.push("ScreenViewer");
+    }
+    m
+}
+
+/// Accept an incoming call by POSTing to the acceptance URL (audio only).
 pub async fn accept_call(
     http: &reqwest::Client,
     skype_token: &str,
     notification: &CallNotification,
+) -> Result<()> {
+    accept_call_with_video(http, skype_token, notification, false).await
+}
+
+/// Accept an incoming call, advertising Video in `acceptedCallModalities`
+/// when `video` is set (the SDP answer carries the video m-line either way).
+pub async fn accept_call_with_video(
+    http: &reqwest::Client,
+    skype_token: &str,
+    notification: &CallNotification,
+    video: bool,
 ) -> Result<()> {
     let invitation = notification
         .call_invitation
@@ -394,7 +524,7 @@ pub async fn accept_call(
         .context("No acceptance URL in links")?;
 
     let payload = serde_json::json!({
-        "acceptedCallModalities": ["Audio"],
+        "acceptedCallModalities": accepted_call_modalities(video),
         "endpointMetadata": {
             "isCallMediaCaptured": false,
             "isMicrophoneOn": false
@@ -1232,5 +1362,132 @@ pub async fn end_call(
         Ok(())
     } else {
         anyhow::bail!("Call end failed ({}): {}", status, body);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepted_call_modalities_audio_and_video() {
+        assert_eq!(accepted_call_modalities(false), vec!["Audio"]);
+        assert_eq!(accepted_call_modalities(true), vec!["Audio", "Video"]);
+    }
+
+    fn test_params() -> ConversationCallParams<'static> {
+        ConversationCallParams {
+            ic3_token: "token",
+            trouter_surl: "https://trouter.example/",
+            caller_mri: "8:orgid:00000000-0000-0000-0000-000000000001",
+            caller_display_name: "Test User",
+            endpoint_id: "endpoint-1",
+            participant_id: "participant-1",
+            thread_id: "19:meeting_test@thread.v2",
+            chain_id: "chain-1",
+            message_id: "0123456789abcdef",
+            caller_oid: "00000000-0000-0000-0000-000000000001",
+            tenant_id: "00000000-0000-0000-0000-0000000000aa",
+            meeting: None,
+        }
+    }
+
+    #[test]
+    fn meeting_join_names_the_meetings_call() {
+        let params = test_params();
+        let adhoc = create_conversation_payload(&params);
+        assert!(adhoc["groupChat"]["messageId"].is_null());
+        assert!(adhoc["meetingInfo"].is_null());
+
+        let meeting = ConversationCallParams {
+            meeting: Some(MeetingCoordinates {
+                message_id: "0",
+                organizer_oid: Some("00000000-0000-0000-0000-000000000002"),
+                tenant_id: Some("00000000-0000-0000-0000-0000000000bb"),
+            }),
+            ..test_params()
+        };
+        let phase1 = create_conversation_payload(&meeting);
+        assert_eq!(phase1["groupChat"]["threadId"], "19:meeting_test@thread.v2");
+        assert_eq!(phase1["groupChat"]["messageId"], "0");
+        assert_eq!(
+            phase1["meetingInfo"]["organizerId"],
+            "00000000-0000-0000-0000-000000000002"
+        );
+        assert_eq!(
+            phase1["meetingInfo"]["tenantId"],
+            "00000000-0000-0000-0000-0000000000bb"
+        );
+
+        let join = join_conversation_payload_with_modalities(&meeting, "v=0\r\n", &["Audio"]);
+        assert_eq!(join["groupChat"]["messageId"], "0");
+        assert_eq!(
+            join["meetingInfo"]["organizerId"],
+            "00000000-0000-0000-0000-000000000002"
+        );
+
+        // Back to null when the join names no organizer.
+        let fallback = ConversationCallParams {
+            meeting: Some(MeetingCoordinates {
+                message_id: "0",
+                organizer_oid: None,
+                tenant_id: None,
+            }),
+            ..test_params()
+        };
+        let payload = create_conversation_payload(&fallback);
+        assert_eq!(payload["groupChat"]["messageId"], "0");
+        assert_eq!(
+            payload["meetingInfo"]["organizerId"],
+            "00000000-0000-0000-0000-000000000001"
+        );
+    }
+
+    #[test]
+    fn join_conversation_payload_carries_video_modality() {
+        let params = test_params();
+        let audio = join_conversation_payload(&params, "v=0\r\n", false);
+        assert_eq!(
+            audio["callInvitation"]["callModalities"],
+            serde_json::json!(["Audio"])
+        );
+        let video = join_conversation_payload(&params, "v=0\r\n", true);
+        assert_eq!(
+            video["callInvitation"]["callModalities"],
+            serde_json::json!(["Audio", "Video"])
+        );
+        assert_eq!(video["callInvitation"]["mediaContent"]["blob"], "v=0\r\n");
+        assert_eq!(video["groupChat"]["threadId"], "19:meeting_test@thread.v2");
+        assert_eq!(video["debugContent"]["causeId"], "01234567");
+    }
+
+    #[test]
+    fn join_call_modalities_video_and_screen_viewer() {
+        assert_eq!(join_call_modalities(false, false), vec!["Audio"]);
+        assert_eq!(join_call_modalities(true, false), vec!["Audio", "Video"]);
+        assert_eq!(
+            join_call_modalities(true, true),
+            vec!["Audio", "Video", "ScreenViewer"]
+        );
+        assert_eq!(
+            join_call_modalities(false, true),
+            vec!["Audio", "ScreenViewer"]
+        );
+
+        let params = test_params();
+        let body = join_conversation_payload_with_modalities(
+            &params,
+            "v=0\r\n",
+            &join_call_modalities(true, true),
+        );
+        assert_eq!(
+            body["callInvitation"]["callModalities"],
+            serde_json::json!(["Audio", "Video", "ScreenViewer"])
+        );
+        // The bool entry point is unchanged.
+        assert_eq!(
+            join_conversation_payload(&params, "v=0\r\n", true),
+            join_conversation_payload_with_modalities(&params, "v=0\r\n", &["Audio", "Video"])
+        );
     }
 }

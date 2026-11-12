@@ -387,6 +387,7 @@ pub async fn start_call_recording(
                 message_id,
                 caller_oid: "", // not needed for acknowledgement
                 tenant_id: "",  // not needed for acknowledgement
+                meeting: None,
             };
             wait_for_recorder_info(ws, Duration::from_secs(30), http, &conv_params).await
         }
