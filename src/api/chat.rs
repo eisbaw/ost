@@ -595,6 +595,223 @@ pub async fn create_group_chat_data(
 }
 
 // ---------------------------------------------------------------------------
+// Group chat management: rename, add people, remove people
+// ---------------------------------------------------------------------------
+//
+// Chat service thread writes, the Teams web client's shapes:
+// rename = PUT /v1/threads/{id}/properties?name=topic {"topic": ...};
+// add = PUT /v1/threads/{id}/members/8:orgid:{oid} {"role", "shareHistoryTime"};
+// remove = DELETE /v1/threads/{id}/members/8:orgid:{oid}. Group threads
+// only: 1:1 threads have a fixed roster and no topic, so they are refused
+// before any network.
+
+/// 1:1-shaped thread ids (`19:…@unq.…`): group (`@thread.v2`) and
+/// meeting ids are excluded. Shared with the chat-names PR; keep either
+/// copy when both land.
+fn is_onetoone_id(chat_id: &str) -> bool {
+    chat_id.starts_with("19:") && !chat_id.contains("@thread") && !chat_id.contains("meeting")
+}
+
+/// Trimmed group-thread id, or an error for empty ids and 1:1 threads.
+pub fn group_thread_id(chat_id: &str) -> Result<&str> {
+    let id = chat_id.trim();
+    if id.is_empty() {
+        bail!("empty chat_id");
+    }
+    if is_onetoone_id(id) {
+        bail!("not a group chat");
+    }
+    Ok(id)
+}
+
+/// PUT target for a group thread's topic.
+pub fn thread_topic_url(base: &str, chat_id: &str) -> String {
+    format!("{}/v1/threads/{}/properties?name=topic", base, chat_id.trim())
+}
+
+/// PUT body for a topic; blank clears the group name (Teams allows it).
+pub fn thread_topic_body(topic: &str) -> serde_json::Value {
+    serde_json::json!({ "topic": topic.trim() })
+}
+
+/// How much earlier history a newly added member sees.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShareHistory {
+    /// Only messages from now on.
+    None,
+    /// The past `n` days.
+    Days(u32),
+    /// The whole chat.
+    All,
+}
+
+impl ShareHistory {
+    /// Wire mode + day count: "none" | "days" | "all".
+    pub fn from_mode(mode: &str, days: u32) -> Option<Self> {
+        match mode.trim().to_ascii_lowercase().as_str() {
+            "none" | "" => Some(Self::None),
+            "days" => Some(Self::Days(days)),
+            "all" => Some(Self::All),
+            _ => None,
+        }
+    }
+
+    /// `shareHistoryTime` (epoch ms): 0 = all history, `now` = none.
+    pub fn share_history_time(self, now_ms: u64) -> u64 {
+        match self {
+            Self::None => now_ms,
+            Self::Days(n) => now_ms.saturating_sub(u64::from(n) * 86_400_000),
+            Self::All => 0,
+        }
+    }
+}
+
+/// PUT body adding one member: `Admin`, like group create (every member
+/// manages the roster), with the history cut-off.
+pub fn chat_add_member_body(history: ShareHistory, now_ms: u64) -> serde_json::Value {
+    serde_json::json!({
+        "role": "Admin",
+        "shareHistoryTime": history.share_history_time(now_ms),
+    })
+}
+
+/// A user ref as given (UPN, AAD id, or roster MRI `8:orgid:{oid}`),
+/// with the MRI prefix stripped so it resolves like an AAD id.
+pub fn member_user_ref(user: &str) -> &str {
+    let u = user.trim();
+    u.strip_prefix("8:orgid:").unwrap_or(u)
+}
+
+/// Per-user outcome of an add.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemberAddResult {
+    pub user: String,
+    pub ok: bool,
+    pub error: Option<String>,
+}
+
+fn now_epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Rename (or clear the name of) one group chat.
+pub async fn rename_chat_with_client(client: &TeamsClient, chat_id: &str, topic: &str) -> Result<()> {
+    let id = group_thread_id(chat_id)?;
+    let url = thread_topic_url(&client.chat_service_url(), id);
+    client.chat_put(&url, &thread_topic_body(topic)).await?;
+    Ok(())
+}
+
+/// Add people to one group chat, one PUT per user in order; each user's
+/// result is reported (a failure does not stop the rest).
+pub async fn add_chat_members_with_client(
+    client: &TeamsClient,
+    chat_id: &str,
+    users: &[String],
+    history: ShareHistory,
+) -> Result<Vec<MemberAddResult>> {
+    let id = group_thread_id(chat_id)?;
+    let users: Vec<&str> = users.iter().map(|u| u.trim()).filter(|u| !u.is_empty()).collect();
+    if users.is_empty() {
+        bail!("no members");
+    }
+    let base = client.chat_service_url();
+    let body = chat_add_member_body(history, now_epoch_ms());
+    let mut out = Vec::new();
+    for u in users {
+        let res = async {
+            let oid = aad_object_id(client, member_user_ref(u)).await?;
+            client
+                .chat_put(&leave_member_url(&base, id, &own_member_mri(&oid)), &body)
+                .await?;
+            Ok::<(), anyhow::Error>(())
+        }
+        .await;
+        out.push(MemberAddResult {
+            user: u.to_string(),
+            ok: res.is_ok(),
+            error: res.err().map(|e| format!("{:#}", e)),
+        });
+    }
+    Ok(out)
+}
+
+/// Remove one other person from a group chat. Removing yourself is
+/// refused (that is Leave).
+pub async fn remove_chat_member_with_client(client: &TeamsClient, chat_id: &str, user: &str) -> Result<()> {
+    let id = group_thread_id(chat_id)?;
+    let r = member_user_ref(user);
+    if r.is_empty() {
+        bail!("empty user");
+    }
+    let oid = aad_object_id(client, r).await?;
+    let me = aad_object_id(client, "me").await?;
+    if oid == me {
+        bail!("cannot remove yourself; leave the chat instead");
+    }
+    let url = leave_member_url(&client.chat_service_url(), id, &own_member_mri(&oid));
+    client.chat_delete(&url, None).await?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod group_chat_manage_tests {
+    use super::*;
+
+    #[test]
+    fn group_thread_id_refuses_empty_and_one_to_one() {
+        assert!(group_thread_id("  ").is_err());
+        assert!(group_thread_id("19:a_b@unq.gbl.spaces").is_err());
+        assert_eq!(group_thread_id(" 19:g@thread.v2 ").unwrap(), "19:g@thread.v2");
+    }
+
+    #[test]
+    fn rename_request_shape() {
+        assert_eq!(
+            thread_topic_url("https://h", " 19:g@thread.v2 "),
+            "https://h/v1/threads/19:g@thread.v2/properties?name=topic"
+        );
+        assert_eq!(thread_topic_body("  Launch  "), serde_json::json!({"topic": "Launch"}));
+        // Blank clears the name.
+        assert_eq!(thread_topic_body("   "), serde_json::json!({"topic": ""}));
+    }
+
+    #[test]
+    fn share_history_times() {
+        let now = 10 * 86_400_000u64;
+        assert_eq!(ShareHistory::None.share_history_time(now), now);
+        assert_eq!(ShareHistory::All.share_history_time(now), 0);
+        assert_eq!(ShareHistory::Days(3).share_history_time(now), 7 * 86_400_000);
+        assert_eq!(ShareHistory::Days(400).share_history_time(now), 0);
+        assert_eq!(ShareHistory::from_mode("DAYS", 2), Some(ShareHistory::Days(2)));
+        assert_eq!(ShareHistory::from_mode("all", 0), Some(ShareHistory::All));
+        assert_eq!(ShareHistory::from_mode("none", 5), Some(ShareHistory::None));
+        assert_eq!(ShareHistory::from_mode("bogus", 0), None);
+    }
+
+    #[test]
+    fn add_member_request_shape() {
+        assert_eq!(
+            chat_add_member_body(ShareHistory::All, 5),
+            serde_json::json!({"role": "Admin", "shareHistoryTime": 0})
+        );
+        assert_eq!(
+            leave_member_url("https://h", "19:g@thread.v2", &own_member_mri("abc")),
+            "https://h/v1/threads/19:g@thread.v2/members/8:orgid:abc"
+        );
+    }
+
+    #[test]
+    fn member_user_ref_strips_mri() {
+        assert_eq!(member_user_ref(" 8:orgid:abc "), "abc");
+        assert_eq!(member_user_ref("pat@example.com"), "pat@example.com");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Reactions (OstMac om-reactions lane)
 // ---------------------------------------------------------------------------
 //
