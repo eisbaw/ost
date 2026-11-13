@@ -38,7 +38,7 @@ impl Config {
     }
 
     /// Get config file path
-    fn config_path() -> Result<PathBuf> {
+    pub(crate) fn config_path() -> Result<PathBuf> {
         Ok(Self::config_dir()?.join("config.toml"))
     }
 
