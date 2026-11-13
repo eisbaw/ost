@@ -157,8 +157,17 @@ fn system_label_for(chat_id: &str) -> String {
     .to_string()
 }
 
-/// Display name for a conversation: topic → resolved 1:1 mate name →
-/// last-message sender → system label. Never the raw thread id.
+/// Group-shaped thread ids (`…@thread.v2`, meeting threads): the live
+/// list names untitled ones after their members, never the last sender.
+fn is_group_id(chat_id: &str) -> bool {
+    chat_id.contains("thread") || chat_id.contains("meeting")
+}
+
+/// Display name for a conversation: topic → resolved member/mate names →
+/// (1:1 only) last-message sender → system label. Group chats never fall
+/// back to the last sender (that misattributes the chat to one member);
+/// untitled groups resolve member names in the list pass instead.
+/// Never the raw thread id.
 fn conversation_name(conv: &Conversation, mate: Option<&str>) -> String {
     if let Some(ref props) = conv.thread_properties {
         if let Some(ref topic) = props.topic {
@@ -172,14 +181,17 @@ fn conversation_name(conv: &Conversation, mate: Option<&str>) -> String {
             return m.to_string();
         }
     }
-    if let Some(ref msg) = conv.last_message {
-        if let Some(ref name) = msg.im_display_name {
-            if !name.trim().is_empty() {
-                return name.clone();
+    let id = conv.id.as_deref().unwrap_or("");
+    if !is_group_id(id) {
+        if let Some(ref msg) = conv.last_message {
+            if let Some(ref name) = msg.im_display_name {
+                if !name.trim().is_empty() {
+                    return name.clone();
+                }
             }
         }
     }
-    system_label_for(conv.id.as_deref().unwrap_or(""))
+    system_label_for(id)
 }
 
 /// List recent chats using the native Teams API (prints to stdout).
@@ -436,6 +448,44 @@ async fn resolve_mate_name(
         .next()
 }
 
+/// Member display names for an untitled group chat: roster MRIs minus
+/// self, each named by its newest attributed message (same attribution
+/// as [`resolve_mate_name`], in roster order). `None` when no member has
+/// a name — the list then keeps the `"[Group chat]"` system label rather
+/// than the last sender.
+async fn resolve_group_name(
+    client: &TeamsClient,
+    chat_id: &str,
+    self_oid: &str,
+) -> Option<String> {
+    let members = thread_member_mris(client, chat_id).await.ok()?;
+    let others: Vec<String> = members
+        .into_iter()
+        .filter(|m| !mri_is_self(m, self_oid))
+        .collect();
+    if others.is_empty() {
+        return None;
+    }
+    let page = read_messages_page(client, chat_id, 25, None).await.ok()?;
+    let names: Vec<String> = others
+        .iter()
+        .filter_map(|mri| {
+            let mri = mri.to_lowercase();
+            page.messages
+                .iter()
+                .rev()
+                .filter(|m| m.sender_mri.to_lowercase() == mri)
+                .map(|m| m.sender.clone())
+                .filter(|s| !s.trim().is_empty() && s != "?")
+                .next()
+        })
+        .collect();
+    if names.is_empty() {
+        return None;
+    }
+    Some(names.join(", "))
+}
+
 // ---------------------------------------------------------------------------
 // Batched, cached 1:1 mate names for chat-list paging
 // ---------------------------------------------------------------------------
@@ -536,6 +586,32 @@ pub(crate) async fn resolve_mates_cached(
     now: u64,
     concurrency: usize,
 ) -> std::collections::HashMap<String, String> {
+    resolve_names_cached(client, ids, me, cache, now, concurrency, false).await
+}
+
+/// Member names for untitled group threads: same cache, batching, and
+/// best-effort rules as the 1:1 mate pass (a cached entry holds the
+/// resolved list name, mate or member list).
+pub(crate) async fn resolve_group_names_cached(
+    client: &TeamsClient,
+    ids: &[String],
+    me: &str,
+    cache: &std::sync::Mutex<MateNames>,
+    now: u64,
+    concurrency: usize,
+) -> std::collections::HashMap<String, String> {
+    resolve_names_cached(client, ids, me, cache, now, concurrency, true).await
+}
+
+async fn resolve_names_cached(
+    client: &TeamsClient,
+    ids: &[String],
+    me: &str,
+    cache: &std::sync::Mutex<MateNames>,
+    now: u64,
+    concurrency: usize,
+    groups: bool,
+) -> std::collections::HashMap<String, String> {
     use futures::StreamExt;
     let mut out = std::collections::HashMap::new();
     let mut misses: Vec<String> = Vec::new();
@@ -555,7 +631,11 @@ pub(crate) async fn resolve_mates_cached(
     }
     let found: Vec<(String, Option<String>)> = futures::stream::iter(misses)
         .map(|id| async move {
-            let name = resolve_mate_name(client, &id, me).await;
+            let name = if groups {
+                resolve_group_name(client, &id, me).await
+            } else {
+                resolve_mate_name(client, &id, me).await
+            };
             (id, name)
         })
         .buffer_unordered(concurrency.max(1))
@@ -569,7 +649,7 @@ pub(crate) async fn resolve_mates_cached(
             out.insert(id, n);
             any = true;
         } else {
-            tracing::debug!("mate resolve failed for {}", id);
+            tracing::debug!("name resolve failed for {}", id);
         }
     }
     if any {
@@ -581,10 +661,11 @@ pub(crate) async fn resolve_mates_cached(
 /// List recent chats and return structured data.
 ///
 /// 1:1 chats without a topic are named after the mate (roster MRI
-/// minus self, attributed through message history); every other
-/// fallback is topic → last sender → system label, never a raw id.
-/// Mate resolution is best-effort: roster/history/whoami failures
-/// keep the sender/label fallback, never fail the list.
+/// minus self, attributed through message history); untitled group chats
+/// after their members (same attribution, roster order). Otherwise the
+/// fallback is topic → (1:1 only) last sender → system label, never a
+/// raw id. Resolution is best-effort: roster/history/whoami failures
+/// keep the label fallback, never fail the list.
 pub async fn list_chats_data(client: &TeamsClient, limit: usize) -> Result<Vec<ChatInfo>> {
     // Strategy 1: CSA AFD endpoint with Bearer auth
     let csa_url = format!(
@@ -627,9 +708,11 @@ pub async fn list_chats_data(client: &TeamsClient, limit: usize) -> Result<Vec<C
     let conversations = body.conversations.unwrap_or_default();
 
     let mut chats = Vec::new();
-    // (chat index, conversation index) for 1:1 chats without a topic:
-    // the mate name resolves after the first pass (needs whoami OID).
+    // (chat index, conversation index) for chats without a topic:
+    // 1:1 mate names and untitled group member names resolve after the
+    // first pass (both need the whoami OID).
     let mut needs_mate: Vec<(usize, usize)> = Vec::new();
+    let mut needs_group: Vec<(usize, usize)> = Vec::new();
     for (ci, conv) in conversations.iter().enumerate() {
         let id = conv.id.as_deref().unwrap_or("").to_string();
         if id.is_empty() {
@@ -645,8 +728,10 @@ pub async fn list_chats_data(client: &TeamsClient, limit: usize) -> Result<Vec<C
             .unwrap_or(true);
         if topic_missing && is_onetoone_id(&id) {
             needs_mate.push((chats.len(), ci));
+        } else if topic_missing && is_group_id(&id) {
+            needs_group.push((chats.len(), ci));
         }
-        let is_group = id.contains("thread") || id.contains("meeting");
+        let is_group = is_group_id(&id);
 
         let (last_time, last_sender, last_preview) = if let Some(ref msg) = conv.last_message {
             let time = msg
@@ -684,14 +769,18 @@ pub async fn list_chats_data(client: &TeamsClient, limit: usize) -> Result<Vec<C
         });
     }
 
-    // Second pass: 1:1 mate names via MRI resolve. Cached names answer
-    // first; misses cost one whoami plus a roster + history read each,
-    // run MATE_CONCURRENCY at a time. Any
-    // failure keeps the first-pass name — the list never fails here.
-    if !needs_mate.is_empty() {
+    // Second pass: 1:1 mate names and untitled group member names via
+    // MRI resolve. One whoami for the owner OID, then per-chat roster +
+    // history attribution. Any failure keeps the first-pass name — the
+    // list never fails here.
+    if !needs_mate.is_empty() || !needs_group.is_empty() {
         let cache = mate_cache();
         let now = epoch_secs();
-        let ids: Vec<String> = needs_mate.iter().map(|&(ci, _)| chats[ci].id.clone()).collect();
+        let ids: Vec<String> = needs_mate
+            .iter()
+            .chain(needs_group.iter())
+            .map(|&(ci, _)| chats[ci].id.clone())
+            .collect();
         // Cache hits need no whoami; only misses pay for it.
         let cached_only = {
             let g = cache.lock().unwrap_or_else(|e| e.into_inner());
@@ -703,12 +792,36 @@ pub async fn list_chats_data(client: &TeamsClient, limit: usize) -> Result<Vec<C
             whoami_data(client).await.ok().map(|m| m.id)
         };
         if let Some(me_id) = me_id {
-            let names =
-                resolve_mates_cached(client, &ids, &me_id, cache, now, MATE_CONCURRENCY).await;
-            for (chat_idx, conv_idx) in needs_mate {
-                if let Some(mate) = names.get(&chats[chat_idx].id) {
-                    let conv = &conversations[conv_idx];
-                    chats[chat_idx].name = conversation_name(conv, Some(mate));
+            if !needs_mate.is_empty() {
+                let mate_ids: Vec<String> =
+                    needs_mate.iter().map(|&(ci, _)| chats[ci].id.clone()).collect();
+                let names =
+                    resolve_mates_cached(client, &mate_ids, &me_id, cache, now, MATE_CONCURRENCY)
+                        .await;
+                for (chat_idx, conv_idx) in needs_mate {
+                    if let Some(mate) = names.get(&chats[chat_idx].id) {
+                        let conv = &conversations[conv_idx];
+                        chats[chat_idx].name = conversation_name(conv, Some(mate));
+                    }
+                }
+            }
+            if !needs_group.is_empty() {
+                let group_ids: Vec<String> =
+                    needs_group.iter().map(|&(ci, _)| chats[ci].id.clone()).collect();
+                let names = resolve_group_names_cached(
+                    client,
+                    &group_ids,
+                    &me_id,
+                    cache,
+                    now,
+                    MATE_CONCURRENCY,
+                )
+                .await;
+                for (chat_idx, conv_idx) in needs_group {
+                    if let Some(members) = names.get(&chats[chat_idx].id) {
+                        let conv = &conversations[conv_idx];
+                        chats[chat_idx].name = conversation_name(conv, Some(members));
+                    }
                 }
             }
         }
@@ -949,6 +1062,35 @@ src="x">"#));
         // Missing id entirely still labels.
         let c: Conversation = serde_json::from_str(r#"{}"#).unwrap();
         assert_eq!(conversation_name(&c, None), "[Chat]");
+    }
+
+    #[test]
+    fn conversation_name_group_uses_members_never_last_sender() {
+        // Untitled group with a last message: the sender must NOT become
+        // the chat name — members resolve in the list pass instead.
+        let c = conv(
+            r#"{"id":"19:plan@thread.v2",
+                "lastMessage":{"imdisplayname":"Ava Lindqvist","messagetype":"Text","content":"hi"}}"#,
+        );
+        assert!(is_group_id("19:plan@thread.v2"));
+        assert_eq!(conversation_name(&c, None), "[Group chat]");
+        assert_eq!(
+            conversation_name(&c, Some("Ava Lindqvist, Tom Becker")),
+            "Ava Lindqvist, Tom Becker"
+        );
+        // Meeting threads are groups too.
+        let m = conv(
+            r#"{"id":"19:meeting_abc@thread.v2",
+                "lastMessage":{"imdisplayname":"Ava Lindqvist"}}"#,
+        );
+        assert!(is_group_id("19:meeting_abc@thread.v2"));
+        assert_eq!(conversation_name(&m, None), "[Meeting chat]");
+        // Topic still wins on groups.
+        let t = conv(
+            r#"{"id":"19:plan@thread.v2","threadProperties":{"topic":"Design Sync"},
+                "lastMessage":{"imdisplayname":"Ava Lindqvist"}}"#,
+        );
+        assert_eq!(conversation_name(&t, None), "Design Sync");
     }
 
     #[test]
