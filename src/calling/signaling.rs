@@ -35,6 +35,163 @@ pub struct ConversationJoined {
     pub response_body: String,
 }
 
+impl ConversationJoined {
+    /// The organizer lobby links of the joined conversation.
+    pub fn lobby_links(&self) -> LobbyLinks {
+        LobbyLinks::from_response(&self.response_body)
+    }
+}
+
+/// Conversation links for meeting-lobby control, kept from the phase-2
+/// join response (Microsoft ACS calling SDK
+/// `processConversationServiceResponse`: `links.admit`,
+/// `links.admitAll`, `links.removeParticipant`). The service only hands
+/// them to a caller allowed to admit (organizer / presenter).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LobbyLinks {
+    pub admit: Option<String>,
+    pub admit_all: Option<String>,
+    pub remove_participant: Option<String>,
+}
+
+impl LobbyLinks {
+    /// Parse the top-level `links` of a conversation response body.
+    pub fn from_response(body: &str) -> Self {
+        let v: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+        let link = |k: &str| {
+            v.get("links")
+                .and_then(|l| l.get(k))
+                .and_then(|u| u.as_str())
+                .filter(|u| !u.is_empty())
+                .map(str::to_string)
+        };
+        LobbyLinks {
+            admit: link("admit"),
+            admit_all: link("admitAll"),
+            remove_participant: link("removeParticipant"),
+        }
+    }
+}
+
+/// Our own participant as sent in the phase-2 join `participants.from`
+/// (ACS `localParticipant`: an outgoing join keeps the ids it sent).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelfParticipant<'a> {
+    pub id: &'a str,
+    pub display_name: &'a str,
+    pub endpoint_id: &'a str,
+    pub participant_id: &'a str,
+}
+
+impl SelfParticipant<'_> {
+    fn from_value(&self) -> serde_json::Value {
+        serde_json::json!({
+            "id": self.id,
+            "displayName": self.display_name,
+            "endpointId": self.endpoint_id,
+            "participantId": self.participant_id,
+            "languageId": "en-US"
+        })
+    }
+}
+
+/// Admit one lobby participant: POST body for [`LobbyLinks::admit`]
+/// (ACS `getPayload13`).
+pub fn lobby_admit_payload(
+    me: &SelfParticipant<'_>,
+    trouter_surl: &str,
+    mri: &str,
+    display_name: &str,
+    cause_id: &str,
+) -> serde_json::Value {
+    let tc = |path: &str| trouter_callback(trouter_surl, me.endpoint_id, path);
+    serde_json::json!({
+        "participants": {
+            "from": me.from_value(),
+            "to": [{"id": mri, "displayName": display_name}]
+        },
+        "links": {
+            "admitFailure": tc("conversation/admitParticipantFailure/"),
+            "admitSuccess": tc("conversation/admitParticipantSuccess/")
+        },
+        "debugContent": {"causeId": cause_id}
+    })
+}
+
+/// Admit everyone in the lobby: POST body for [`LobbyLinks::admit_all`]
+/// (ACS `getPayload26`; operation id doubles as the cause id).
+pub fn lobby_admit_all_payload(
+    me: &SelfParticipant<'_>,
+    trouter_surl: &str,
+    operation_id: &str,
+) -> serde_json::Value {
+    let tc = |path: &str| trouter_callback(trouter_surl, me.endpoint_id, path);
+    serde_json::json!({
+        "participants": {"from": me.from_value()},
+        "links": {"admitAllStatus": tc("conversation/admitAllStatus/")},
+        "operationId": operation_id,
+        "debugContent": {"causeId": operation_id}
+    })
+}
+
+/// Deny a lobby participant (ACS `lobby.reject` = remove participant):
+/// POST body for [`LobbyLinks::remove_participant`] (ACS `getPayload20`).
+pub fn lobby_remove_payload(
+    me: &SelfParticipant<'_>,
+    trouter_surl: &str,
+    mri: &str,
+    display_name: &str,
+) -> serde_json::Value {
+    let tc = |path: &str| trouter_callback(trouter_surl, me.endpoint_id, path);
+    serde_json::json!({
+        "participants": {
+            "from": me.from_value(),
+            "to": [{"id": mri, "displayName": display_name}]
+        },
+        "links": {
+            "removeParticipantSuccess": tc("conversation/removeParticipantSuccess/"),
+            "removeParticipantFailure": tc("conversation/removeParticipantFailure/")
+        }
+    })
+}
+
+/// POST a lobby-control body to a conversation link, with the headers
+/// every other conversation-link POST here carries (Bearer [REDACTED] token,
+/// skype chain/message ids). Returns the response body. The link is
+/// never logged (it carries conversation tokens).
+pub async fn post_lobby_link(
+    http: &reqwest::Client,
+    link: &str,
+    ic3_token: &str,
+    chain_id: &str,
+    payload: &serde_json::Value,
+) -> Result<String> {
+    let message_id = uuid::Uuid::new_v4().to_string();
+    let resp = http
+        .post(link)
+        .header("Authorization", format!("Bearer {}", ic3_token))
+        .header("Content-Type", "application/json")
+        .header("x-microsoft-skype-chain-id", chain_id)
+        .header("x-microsoft-skype-message-id", &message_id)
+        .header("x-microsoft-skype-client", SKYPE_CLIENT_HEADER)
+        .header("Referer", "https://teams.microsoft.com/")
+        .header("ms-teams-partition", TEAMS_PARTITION)
+        .header("ms-teams-region", TEAMS_REGION)
+        .header("ms-teams-ring", TEAMS_RING)
+        .header("x-ms-migration", "True")
+        .json(payload)
+        .send()
+        .await
+        .map_err(|e| anyhow::anyhow!("lobby POST failed: {}", e.without_url()))?;
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    tracing::info!("Lobby POST response: {} ({} bytes)", status, body.len());
+    if !status.is_success() {
+        anyhow::bail!("lobby POST failed ({})", status);
+    }
+    Ok(body)
+}
+
 /// Parameters for the two-phase conversation call placement.
 pub struct ConversationCallParams<'a> {
     pub ic3_token: &'a str,
@@ -1232,5 +1389,81 @@ pub async fn end_call(
         Ok(())
     } else {
         anyhow::bail!("Call end failed ({}): {}", status, body);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SURL: &str = "https://trouter.example/v4/f/abc/";
+
+    fn me() -> SelfParticipant<'static> {
+        SelfParticipant {
+            id: "8:orgid:me",
+            display_name: "Me",
+            endpoint_id: "ep-1",
+            participant_id: "pid-1",
+        }
+    }
+
+    fn from_json() -> serde_json::Value {
+        serde_json::json!({"id": "8:orgid:me", "displayName": "Me", "endpointId": "ep-1",
+            "participantId": "pid-1", "languageId": "en-US"})
+    }
+
+    /// Bodies match the Microsoft ACS calling SDK payloads exactly
+    /// (getPayload13 admit, getPayload26 admitAll, getPayload20 remove).
+    #[test]
+    fn lobby_payloads_match_acs_shapes() {
+        let tc = |p: &str| trouter_callback(SURL, "ep-1", p);
+        assert!(tc("conversation/admitParticipantSuccess/")
+            .starts_with("https://trouter.example/v4/f/abc/callAgent/ep-1/"));
+        assert_eq!(
+            lobby_admit_payload(&me(), SURL, "8:teamsvisitor:g", "Guest", "cause-1"),
+            serde_json::json!({
+                "participants": {"from": from_json(), "to": [{"id": "8:teamsvisitor:g", "displayName": "Guest"}]},
+                "links": {"admitFailure": tc("conversation/admitParticipantFailure/"),
+                          "admitSuccess": tc("conversation/admitParticipantSuccess/")},
+                "debugContent": {"causeId": "cause-1"}
+            })
+        );
+        assert_eq!(
+            lobby_admit_all_payload(&me(), SURL, "op-1"),
+            serde_json::json!({
+                "participants": {"from": from_json()},
+                "links": {"admitAllStatus": tc("conversation/admitAllStatus/")},
+                "operationId": "op-1",
+                "debugContent": {"causeId": "op-1"}
+            })
+        );
+        assert_eq!(
+            lobby_remove_payload(&me(), SURL, "8:teamsvisitor:g", "Guest"),
+            serde_json::json!({
+                "participants": {"from": from_json(), "to": [{"id": "8:teamsvisitor:g", "displayName": "Guest"}]},
+                "links": {"removeParticipantSuccess": tc("conversation/removeParticipantSuccess/"),
+                          "removeParticipantFailure": tc("conversation/removeParticipantFailure/")}
+            })
+        );
+    }
+
+    #[test]
+    fn lobby_links_come_from_the_join_response() {
+        let joined = ConversationJoined {
+            cc_active_url: None,
+            response_body: r#"{"links":{"admit":"https://cc/admit","admitAll":"https://cc/all",
+                "removeParticipant":"https://cc/rm","addParticipant":"https://cc/add"}}"#.to_string(),
+        };
+        assert_eq!(
+            joined.lobby_links(),
+            LobbyLinks {
+                admit: Some("https://cc/admit".into()),
+                admit_all: Some("https://cc/all".into()),
+                remove_participant: Some("https://cc/rm".into()),
+            }
+        );
+        // Attendee join (no admit rights) or unparsable body: no links.
+        assert_eq!(LobbyLinks::from_response(r#"{"links":{"addParticipant":"x"}}"#), LobbyLinks::default());
+        assert_eq!(LobbyLinks::from_response("not json"), LobbyLinks::default());
     }
 }
