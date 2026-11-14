@@ -885,6 +885,47 @@ pub async fn delete_file_data(client: &TeamsClient, drive_id: &str, item_id: &st
     Ok(())
 }
 
+// -- Create a subfolder via Graph --
+
+/// Graph path for creating a child of one driveItem.
+pub fn mkdir_path(drive_id: &str, parent_id: &str) -> String {
+    format!("/drives/{}/items/{}/children", drive_id, parent_id)
+}
+
+/// POST body creating a subfolder named `name` (Graph create-folder:
+/// `name` + the empty `folder` facet). No conflict behavior: a name
+/// clash fails (409) rather than forking a copy.
+pub fn mkdir_body(name: &str) -> serde_json::Value {
+    serde_json::json!({ "name": name, "folder": {} })
+}
+
+/// Create a subfolder named `name` under `parent_id` on `drive_id`
+/// (Graph `POST .../children`). Returns the new folder item
+/// (`is_folder` true). Blank names and blank parents are rejected
+/// before any network; a `"root"` parent resolves to the drive root's
+/// real id (same alias as move/copy).
+pub async fn create_folder_data(
+    client: &TeamsClient,
+    drive_id: &str,
+    parent_id: &str,
+    name: &str,
+) -> Result<SharedFile> {
+    if name.trim().is_empty() {
+        bail!("New folder name is empty");
+    }
+    if parent_id.trim().is_empty() {
+        bail!("Parent folder id is empty");
+    }
+    let parent = resolve_folder_id(client, drive_id, parent_id).await?;
+    let path = mkdir_path(drive_id, &parent);
+    let resp = client.graph_post(&path, &mkdir_body(name)).await?;
+    let item: DriveItem = resp
+        .json()
+        .await
+        .context("Failed to parse create folder response")?;
+    Ok(shared_from_item(item, None))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1115,6 +1156,16 @@ mod tests {
         assert_eq!(
             copy_body("D1", "F9", None),
             serde_json::json!({"parentReference": {"driveId": "D1", "id": "F9"}})
+        );
+    }
+
+    #[test]
+    fn mkdir_path_and_body() {
+        // New Folder posts name + folder facet to children.
+        assert_eq!(mkdir_path("D1", "F9"), "/drives/D1/items/F9/children");
+        assert_eq!(
+            mkdir_body("Plans"),
+            serde_json::json!({"name": "Plans", "folder": {}})
         );
     }
 
