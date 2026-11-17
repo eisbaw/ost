@@ -469,8 +469,139 @@ fn render_prose_html(prose: &str) -> String {
 /// Inline backticks stay literal (no `<code>` on the wire; Swift
 /// renders them mono).
 pub fn build_message_html(message: &str) -> String {
+    build_message_html_opts(message, &SendOpts::none())
+}
+
+/// COMPOSER-B: [`build_message_html`] with broadcast-mention
+/// substitution. Tokens become private-use sentinels before rendering
+/// (escaping and inline markers never see display text), restored to
+/// `<at>` tags after. `message` decides the legacy/rich path (tokens
+/// carry no markers, so either input decides identically).
+pub fn build_message_html_opts(message: &str, opts: &SendOpts) -> String {
+    let (tagged, _) = apply_mentions(message, &opts.mentions);
+    let html = render_tagged(message, &tagged);
+    restore_mentions(&html, &opts.mentions)
+}
+
+/// Sentinel marking mention `idx` through escaping and rendering
+/// (private-use: `html_escape` never touches them, inline markers never
+/// match them, and real drafts never contain them).
+fn mention_sentinel(idx: usize) -> String {
+    format!("\u{E000}{idx}\u{E001}")
+}
+
+/// Substitute whole-token broadcast mentions with sentinels, returning
+/// the tagged text and one matched flag per mention. Longest token
+/// first. A token matches when the char before is start/whitespace/
+/// punctuation and the char after is end/whitespace/punctuation
+/// (composer-trigger bounds, so `x@channel` and `@channelx` never tag).
+/// Case-insensitive. Fenced code blocks and inline-code spans are never
+/// substituted (Swift `CodeBlocks` parity: code is never mined).
+pub fn apply_mentions(markdown: &str, mentions: &[WireMention]) -> (String, Vec<bool>) {
+    let mut matched = vec![false; mentions.len()];
+    if mentions.is_empty() {
+        return (markdown.to_string(), matched);
+    }
+    let mut order: Vec<usize> = (0..mentions.len()).collect();
+    order.sort_by_key(|&i| std::cmp::Reverse(mentions[i].token.len()));
+    let tick_spans = wire_tick_spans(markdown);
+    // Fenced-block line ranges (same opener/closer rules + block cap as
+    // the renderer, so exclusion agrees with what renders as code).
+    let mut fenced: Vec<(usize, usize)> = Vec::new();
+    let mut fence: Option<(char, usize)> = None;
+    let mut blocks = 0;
+    let mut off = 0;
+    for line in markdown.split_inclusive('\n') {
+        let len = line.len();
+        let body = line.strip_suffix('\n').unwrap_or(line);
+        if let Some((ch, flen)) = fence {
+            fenced.push((off, off + len));
+            if wire_fence_closer(body, ch, flen) {
+                fence = None;
+            }
+        } else if blocks < WIRE_FENCE_MAX_BLOCKS {
+            if let Some((ch, flen)) = wire_fence_opener(body) {
+                fenced.push((off, off + len));
+                fence = Some((ch, flen));
+                blocks += 1;
+            }
+        }
+        off += len;
+    }
+    // Byte scan: `@` is ASCII, so every hit starts a char boundary and
+    // `pos + token.len()` (token ASCII-only below) ends one.
+    let bytes = markdown.as_bytes();
+    let mut hits: Vec<(usize, usize)> = Vec::new(); // (pos, mention idx)
+    for &i in &order {
+        let tok = mentions[i].token.to_ascii_lowercase();
+        if !tok.starts_with('@') || !tok.is_ascii() || tok.len() < 2 {
+            continue;
+        }
+        let tb = tok.as_bytes();
+        let mut p = 0;
+        while p + tb.len() <= bytes.len() {
+            if bytes[p] == b'@' && bytes[p..p + tb.len()].eq_ignore_ascii_case(tb) {
+                let end = p + tb.len();
+                let prev_ok = p == 0 || {
+                    let c = markdown[..p].chars().next_back().unwrap();
+                    !c.is_alphanumeric() && c != '_'
+                };
+                let next_ok = end == bytes.len() || {
+                    let c = markdown[end..].chars().next().unwrap();
+                    !c.is_alphanumeric() && c != '_'
+                };
+                let in_code = tick_spans.iter().any(|&(a, b)| p < b && end > a)
+                    || fenced.iter().any(|&(a, b)| p < b && end > a);
+                if prev_ok && next_ok && !in_code {
+                    hits.push((p, i));
+                    matched[i] = true;
+                    p = end;
+                    continue;
+                }
+            }
+            p += 1;
+        }
+    }
+    if hits.is_empty() {
+        return (markdown.to_string(), matched);
+    }
+    hits.sort();
+    let mut out = String::with_capacity(markdown.len());
+    let mut pos = 0;
+    for (at, i) in hits {
+        // Tokens are pairwise distinct, so hits never overlap; a stale
+        // `pos` (unreachable) keeps the text intact rather than corrupt.
+        if at < pos {
+            continue;
+        }
+        out.push_str(&markdown[pos..at]);
+        out.push_str(&mention_sentinel(i));
+        pos = at + mentions[i].token.len();
+    }
+    out.push_str(&markdown[pos..]);
+    (out, matched)
+}
+
+/// Restore sentinels to `<at>` tags (ids and display text escaped —
+/// both are caller-supplied). Indices without sentinels are no-ops.
+pub fn restore_mentions(html: &str, mentions: &[WireMention]) -> String {
+    let mut out = html.to_string();
+    for (i, m) in mentions.iter().enumerate() {
+        out = out.replace(
+            &mention_sentinel(i),
+            &format!(
+                "<at id=\"{}\">{}</at>",
+                html_escape(&m.id),
+                html_escape(&m.display)
+            ),
+        );
+    }
+    out
+}
+
+fn render_tagged(message: &str, tagged: &str) -> String {
     if !wire_has_rich(message) {
-        return format!("<p>{}</p>", html_escape(message));
+        return format!("<p>{}</p>", html_escape(tagged));
     }
     enum Seg {
         Prose(String),
@@ -526,14 +657,173 @@ pub fn build_message_html(message: &str) -> String {
     out
 }
 
+// ---------------------------------------------------------------------------
+// COMPOSER-B (C1b): importance/urgent, announcement subject, broadcast
+// mentions. All additive: `SendOpts::none()` renders the legacy body
+// bit-identical; each set field adds exactly one body key. Bodies never
+// fail on opts (unknown importance parses to normal; bad mentions JSON
+// parses to none).
+// ---------------------------------------------------------------------------
+
+/// Outbound importance (Graph `chatMessage.importance` parity: `normal`
+/// is the chatsvc default and is never serialized).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WireImportance {
+    #[default]
+    Normal,
+    Important,
+    Urgent,
+}
+
+impl WireImportance {
+    /// `"high"` / `"urgent"`, or `None` for normal (never on the wire).
+    pub fn wire_value(self) -> Option<&'static str> {
+        match self {
+            WireImportance::Normal => None,
+            WireImportance::Important => Some("high"),
+            WireImportance::Urgent => Some("urgent"),
+        }
+    }
+
+    /// Parse the Swift `MessageImportance` wire string (`""`/`"normal"`
+    /// → normal; case-insensitive). Unknown stays normal: importance is
+    /// cosmetic, never a send failure.
+    pub fn parse(s: &str) -> WireImportance {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "high" | "important" => WireImportance::Important,
+            "urgent" => WireImportance::Urgent,
+            _ => WireImportance::Normal,
+        }
+    }
+}
+
+/// One broadcast mention for the send path (`@channel` / `@team` /
+/// `@everyone`): the literal token as typed plus the observed wire
+/// identity (`<at id="0">…</at>` — the broadcast id fixtures carry;
+/// person mentions need member MRIs the composer cannot mint, so they
+/// stay plain text and never appear here).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WireMention {
+    pub token: String,
+    pub id: String,
+    pub display: String,
+    pub kind: String,
+}
+
+/// Max broadcast mentions honored per send (hostile-input cap, mirrors
+/// [`WIRE_FENCE_MAX_BLOCKS`); extras are dropped, never fail.
+pub const WIRE_MENTION_MAX: usize = 20;
+
+/// Parse the Swift `mentions_json` (`[{token,id,display,kind}]`).
+/// Tolerant: bad JSON or bad rows yield no mentions, never a failure.
+pub fn parse_wire_mentions(json: &str) -> Vec<WireMention> {
+    let t = json.trim();
+    if t.is_empty() {
+        return Vec::new();
+    }
+    let v: serde_json::Value = serde_json::from_str(t).unwrap_or(serde_json::Value::Null);
+    let Some(arr) = v.as_array() else {
+        return Vec::new();
+    };
+    arr.iter()
+        .filter_map(|e| {
+            let o = e.as_object()?;
+            let token = o.get("token")?.as_str()?.trim();
+            let id = o.get("id")?.as_str()?.trim();
+            let display = o.get("display")?.as_str()?;
+            let kind = o.get("kind")?.as_str()?.trim();
+            if token.is_empty() || !token.starts_with('@') || id.is_empty() || kind.is_empty() {
+                return None;
+            }
+            Some(WireMention {
+                token: token.to_string(),
+                id: id.to_string(),
+                display: display.to_string(),
+                kind: kind.to_string(),
+            })
+        })
+        .take(WIRE_MENTION_MAX)
+        .collect()
+}
+
+/// Additive send options (COMPOSER-B). `none()` is the legacy request.
+#[derive(Debug, Clone, Default)]
+pub struct SendOpts {
+    pub importance: WireImportance,
+    pub subject: Option<String>,
+    pub mentions: Vec<WireMention>,
+}
+
+impl SendOpts {
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    /// Clone keeping only the mentions whose tokens substitute in `text
+    /// (matched flags from [`apply_mentions`]), so entities never name a
+    /// token the content lacks.
+    pub fn matched_in(&self, text: &str) -> SendOpts {
+        let hit = apply_mentions(text, &self.mentions).1;
+        let mut out = self.clone();
+        out.mentions = self
+            .mentions
+            .iter()
+            .zip(hit)
+            .filter(|(_, m)| *m)
+            .map(|(w, _)| w.clone())
+            .collect();
+        out
+    }
+
+    /// Serialize the set fields onto a POST body (callers pass only
+    /// matched mentions — see [`send_message_body_opts`] — so a stale
+    /// token list never notifies blind).
+    fn apply_to_body(&self, body: &mut serde_json::Value) {
+        if let Some(v) = self.importance.wire_value() {
+            body["importance"] = serde_json::Value::String(v.to_string());
+        }
+        if let Some(s) = self.subject.as_ref() {
+            if !s.trim().is_empty() {
+                body["subject"] = serde_json::Value::String(s.clone());
+            }
+        }
+        if !self.mentions.is_empty() {
+            let ms: Vec<serde_json::Value> = self
+                .mentions
+                .iter()
+                .map(|m| {
+                    serde_json::json!({
+                        "itemid": m.id,
+                        "mentionType": m.kind,
+                        "displayName": m.display,
+                    })
+                })
+                .collect();
+            body["properties"] = serde_json::json!({ "mentions": ms });
+        }
+    }
+}
+
 /// POST body for sending one chat message (captured-body seam for
 /// tests: the exact JSON `chat_post` receives, minus transport).
 pub fn send_message_body(message: &str) -> serde_json::Value {
-    serde_json::json!({
-        "content": build_message_html(message),
+    send_message_body_opts(message, &SendOpts::none())
+}
+
+/// [`send_message_body`] with COMPOSER-B options. Entities cover only
+/// the mentions whose tokens actually substituted (matched flags from
+/// [`apply_mentions`]).
+pub fn send_message_body_opts(message: &str, opts: &SendOpts) -> serde_json::Value {
+    let filtered = opts.matched_in(message);
+    let (tagged, _) = apply_mentions(message, &filtered.mentions);
+    let html = restore_mentions(&render_tagged(message, &tagged), &filtered.mentions);
+    let mut body = serde_json::json!({
+        "content": html,
         "messagetype": "RichText/Html",
         "contenttype": "text"
-    })
+    });
+    filtered.apply_to_body(&mut body);
+    body
 }
 
 
@@ -858,6 +1148,176 @@ mod tests {
             build_message_html("**hi**\n```\ncode  x\n```\n- bye"),
             "<p><strong>hi</strong></p><pre>code  x</pre><ul><li>bye</li></ul>"
         );
+    }
+
+
+    // COMPOSER-B: importance parses to Graph parity values, normal (and
+    // unknown) serializes to nothing.
+    #[test]
+    fn composer_b_importance_parse_and_wire() {
+        assert_eq!(WireImportance::parse(""), WireImportance::Normal);
+        assert_eq!(WireImportance::parse("normal"), WireImportance::Normal);
+        assert_eq!(WireImportance::parse("bogus"), WireImportance::Normal);
+        assert_eq!(WireImportance::parse("HIGH"), WireImportance::Important);
+        assert_eq!(WireImportance::parse("important"), WireImportance::Important);
+        assert_eq!(WireImportance::parse("urgent"), WireImportance::Urgent);
+        assert_eq!(WireImportance::Normal.wire_value(), None);
+        assert_eq!(WireImportance::Important.wire_value(), Some("high"));
+        assert_eq!(WireImportance::Urgent.wire_value(), Some("urgent"));
+    }
+
+    // COMPOSER-B: mentions JSON is tolerant (bad JSON/rows → none) and
+    // capped (hostile-input parity).
+    #[test]
+    fn composer_b_parse_wire_mentions_tolerant() {
+        assert!(parse_wire_mentions("").is_empty());
+        assert!(parse_wire_mentions("not json").is_empty());
+        assert!(parse_wire_mentions("{}").is_empty());
+        assert!(parse_wire_mentions(r#"[{"token":"@channel"}]"#).is_empty());
+        assert!(parse_wire_mentions(r#"[{"token":"channel","id":"0","display":"c","kind":"channel"}]"#)
+            .is_empty());
+        let one = parse_wire_mentions(
+            r#"[{"token":"@channel","id":"0","display":"channel","kind":"channel"}]"#,
+        );
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0].kind, "channel");
+        let many: String = (0..30)
+            .map(|_| r#"{"token":"@channel","id":"0","display":"c","kind":"channel"}"#)
+            .collect::<Vec<_>>()
+            .join(",");
+        assert_eq!(parse_wire_mentions(&format!("[{many}]")).len(), WIRE_MENTION_MAX);
+    }
+
+    fn composer_b_mention() -> WireMention {
+        WireMention {
+            token: "@channel".to_string(),
+            id: "0".to_string(),
+            display: "channel".to_string(),
+            kind: "channel".to_string(),
+        }
+    }
+
+    fn composer_b_opts() -> SendOpts {
+        SendOpts {
+            importance: WireImportance::Normal,
+            subject: None,
+            mentions: vec![composer_b_mention()],
+        }
+    }
+
+    // COMPOSER-B: token substitution is whole-token, case-insensitive,
+    // and skips code (fences + inline spans).
+    #[test]
+    fn composer_b_apply_mentions_bounds() {
+        let m = vec![composer_b_mention()];
+        let (t, hit) = apply_mentions("hey @channel look", &m);
+        assert_eq!(hit, vec![true]);
+        assert_eq!(
+            restore_mentions(&t, &m),
+            "hey <at id=\"0\">channel</at> look"
+        );
+        // Case-insensitive, all occurrences (two substitutions).
+        let (t, hit) = apply_mentions("@Channel and @CHANNEL", &m);
+        assert_eq!(hit, vec![true]);
+        assert_eq!(t.matches(&mention_sentinel(0)).count(), 2);
+        assert_eq!(
+            restore_mentions(&t, &m),
+            "<at id=\"0\">channel</at> and <at id=\"0\">channel</at>"
+        );
+        // Glued tokens never tag (`!` splits, but the `a` prefix blocks).
+        for fixed in ["x@channel", "@channelx", "@channel_x", "a@channel!b@c", "mail@channel.com"] {
+            let (_, hit) = apply_mentions(fixed, &m);
+            assert_eq!(hit, vec![false], "{fixed:?}");
+        }
+        // Punctuation bounds do tag.
+        let (_, hit) = apply_mentions("(@channel!)", &m);
+        assert_eq!(hit, vec![true]);
+        // Fenced blocks and inline code never tag.
+        let (_, hit) = apply_mentions("```\n@channel\n```", &m);
+        assert_eq!(hit, vec![false]);
+        let (_, hit) = apply_mentions("`@channel` stays", &m);
+        assert_eq!(hit, vec![false]);
+        // Empty mention list is the identity.
+        let (t, hit) = apply_mentions("hey @channel", &[]);
+        assert_eq!(t.as_str(), "hey @channel");
+        assert!(hit.is_empty());
+    }
+
+    // COMPOSER-B: bodies carry importance/subject/entities only when set;
+    // `none()` is the legacy body bit-identical.
+    #[test]
+    fn composer_b_body_opts_keys() {
+        let legacy = send_message_body("hey @channel");
+        let plain = send_message_body_opts("hey @channel", &SendOpts::none());
+        assert_eq!(legacy, plain);
+        assert!(legacy.get("importance").is_none());
+        assert!(legacy.get("subject").is_none());
+        assert!(legacy.get("properties").is_none());
+
+        let important = send_message_body_opts(
+            "hey",
+            &SendOpts {
+                importance: WireImportance::Important,
+                ..SendOpts::none()
+            },
+        );
+        assert_eq!(important["importance"], "high");
+        assert!(important.get("subject").is_none());
+
+        let urgent_subject = send_message_body_opts(
+            "hey",
+            &SendOpts {
+                importance: WireImportance::Urgent,
+                subject: Some("Weekly sync".to_string()),
+                ..SendOpts::none()
+            },
+        );
+        assert_eq!(urgent_subject["importance"], "urgent");
+        assert_eq!(urgent_subject["subject"], "Weekly sync");
+
+        // Blank subjects serialize to nothing.
+        let blank = send_message_body_opts(
+            "hey",
+            &SendOpts {
+                subject: Some("   ".to_string()),
+                ..SendOpts::none()
+            },
+        );
+        assert!(blank.get("subject").is_none());
+
+        // Entities cover only matched tokens (stale list → no blind notify).
+        let full = send_message_body_opts("hey @channel", &composer_b_opts());
+        assert_eq!(full["content"], "<p>hey <at id=\"0\">channel</at></p>");
+        assert_eq!(full["properties"]["mentions"][0]["itemid"], "0");
+        assert_eq!(full["properties"]["mentions"][0]["mentionType"], "channel");
+        let stale = send_message_body_opts("hey all", &composer_b_opts());
+        assert!(stale.get("properties").is_none());
+
+        // Display text and ids escape (caller-supplied).
+        let evil = send_message_body_opts(
+            "hi @channel",
+            &SendOpts {
+                mentions: vec![WireMention {
+                    token: "@channel".to_string(),
+                    id: "0\"><b>".to_string(),
+                    display: "a<b>&".to_string(),
+                    kind: "channel".to_string(),
+                }],
+                ..SendOpts::none()
+            },
+        );
+        assert_eq!(
+            evil["content"],
+            "<p>hi <at id=\"0&quot;&gt;&lt;b&gt;\">a&lt;b&gt;&amp;</at></p>"
+        );
+        // No sentinel leaks into any body.
+        for b in [&full, &stale, &evil, &legacy] {
+            assert!(
+                !b["content"].as_str().unwrap_or("").contains('\u{E000}'),
+                "{:?}",
+                b["content"]
+            );
+        }
     }
 
 }
