@@ -65,6 +65,9 @@ toml = "0.8"
 # Async utilities
 futures = "0.3"
 
+# Exclusive file locking for cross-process token-refresh single-flight
+libc = "0.2"
+
 # WebSocket (Trouter)
 tokio-tungstenite = { version = "0.20", features = ["native-tls"] }
 uuid = { version = "1", features = ["v4"] }

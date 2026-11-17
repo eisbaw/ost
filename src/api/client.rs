@@ -43,6 +43,11 @@ impl TeamsClient {
                         bail!("No refresh token available. Run 'teams-cli login'.");
                     }
                     Err(e) => {
+                        if crate::auth::oauth::is_reauth_required(&e) {
+                            // Burned/expired/revoked refresh token: single
+                            // attempt, fail fast, no retry.
+                            bail!("Stored session expired ({:#}).", e);
+                        }
                         bail!("Token refresh failed: {:#}. Run 'teams-cli login'.", e);
                     }
                 }

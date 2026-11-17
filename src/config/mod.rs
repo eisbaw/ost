@@ -38,8 +38,12 @@ pub struct Config {
 }
 
 impl Config {
-    /// Get config directory path
+    /// Get config directory path. `OST_CONFIG_DIR` overrides it outright
+    /// (tests point it at a temp dir: never touch the real store).
     fn config_dir() -> Result<PathBuf> {
+        if let Some(dir) = std::env::var_os("OST_CONFIG_DIR") {
+            return Ok(PathBuf::from(dir));
+        }
         let proj_dirs = ProjectDirs::from("com", "teams-cli", "teams-cli")
             .context("Could not determine config directory")?;
         Ok(proj_dirs.config_dir().to_path_buf())
@@ -136,6 +140,52 @@ impl Config {
         Ok(true)
     }
 
+    /// Sibling lockfile for one profile's refresh single-flight:
+    /// `config.lock` for the default profile, `config-<id>.lock` otherwise.
+    /// Held across read-exchange-write so N concurrent lane processes
+    /// redeem the single-use refresh token at most once.
+    pub fn lock_path_for(profile: &str) -> Result<PathBuf> {
+        let name = normalize_profile(profile);
+        let file = if name.eq_ignore_ascii_case(DEFAULT_PROFILE) {
+            "config.lock".to_string()
+        } else {
+            format!("config-{}.lock", sanitize_profile(&name))
+        };
+        Ok(Self::config_dir()?.join(file))
+    }
+
+    /// Acquire the profile's lockfile exclusively (blocking `flock`).
+    /// The guard holds the lock; dropping it (fd close) releases it.
+    /// Callers must not hold this across `.await` on an async worker:
+    /// acquire it inside `spawn_blocking`, then hold the guard.
+    pub fn lock_profile_exclusive(profile: &str) -> Result<ProfileFileLock> {
+        let path = Self::lock_path_for(profile)?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).context("Failed to create config directory")?;
+        }
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .with_context(|| format!("Failed to open lockfile {}", path.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+            if rc != 0 {
+                return Err(std::io::Error::last_os_error())
+                    .context("Failed to lock profile lockfile");
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = &file;
+            anyhow::bail!("profile file locking is unix-only");
+        }
+        Ok(ProfileFileLock { _file: file })
+    }
+
     /// Save to one profile's file (0600, cache write-through).
     pub fn save_to(&self, profile: &str) -> Result<()> {
         let name = normalize_profile(profile);
@@ -201,6 +251,14 @@ impl Config {
     pub fn set_recorder_token(&mut self, token: String, expires_in: Option<u64>) {
         self.recorder_token = Some(StoredToken::new(token, expires_in));
     }
+}
+
+/// Exclusive hold on one profile's lockfile (see
+/// [`Config::lock_profile_exclusive`]). Dropping closes the fd, which
+/// releases the `flock`. Never persist tokens while holding this without
+/// also holding the refresh single-flight (see `oauth::refresh_for_with`).
+pub struct ProfileFileLock {
+    _file: std::fs::File,
 }
 
 /// (file size, mtime) when the config file exists; `None` when absent

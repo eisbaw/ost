@@ -2,7 +2,8 @@
 
 use anyhow::{Context, Result};
 use oauth2::{
-    basic::BasicClient, AuthUrl, ClientId, DeviceAuthorizationUrl, RefreshToken, Scope,
+    basic::{BasicClient, BasicErrorResponseType},
+    AuthUrl, ClientId, DeviceAuthorizationUrl, RefreshToken, RequestTokenError, Scope,
     StandardDeviceAuthorizationResponse, TokenResponse, TokenUrl,
 };
 
@@ -106,89 +107,227 @@ pub async fn refresh() -> Result<bool> {
 /// Same as [`refresh`], scoped to one account profile (multi-account:
 /// per-account refresh without switching the active profile).
 pub async fn refresh_for(profile: &str) -> Result<bool> {
-    let mut config = Config::load_cached_for(profile)?;
-    let refresh_token_str = match config.get_refresh_token() {
-        Some(rt) => rt,
-        None => return Ok(false),
-    };
+    refresh_for_with(profile, live_main_exchange, true).await
+}
 
+/// One refresh-token grant against the token endpoint (TOKEN-REFRESH-RACE
+/// seam: production uses [`live_main_exchange`]; tests inject a stub IdP
+/// with single-use rotating refresh tokens, zero live traffic).
+#[derive(Debug, Clone)]
+pub struct RefreshedTokens {
+    pub access_token: String,
+    pub expires_in: Option<u64>,
+    /// Rotated refresh token, when the IdP issued one.
+    pub refresh_token: Option<String>,
+}
+
+/// Production grant: one AAD refresh-token exchange (Skype scope).
+async fn live_main_exchange(refresh_token: String) -> Result<RefreshedTokens> {
     let auth_config = AuthConfig::default();
     let client = build_client(&auth_config)?;
 
     tracing::info!("Refreshing AAD token...");
 
     let token_response = client
-        .exchange_refresh_token(&RefreshToken::new(refresh_token_str))
+        .exchange_refresh_token(&RefreshToken::new(refresh_token))
         .add_scope(Scope::new(
             "https://api.spaces.skype.com/.default".to_string(),
         ))
         .add_scope(Scope::new("offline_access".to_string()))
         .request_async(oauth2::reqwest::async_http_client)
         .await
-        .context("Failed to refresh AAD token")?;
-
-    config.set_access_token(
-        token_response.access_token().secret().to_string(),
-        token_response.expires_in().map(|d| d.as_secs()),
-    );
-
-    if let Some(new_rt) = token_response.refresh_token() {
-        config.set_refresh_token(new_rt.secret().to_string());
-    }
-
-    // Exchange for Skype token
-    let aad_token = token_response.access_token().secret();
-    match exchange_skype_token(aad_token, false).await {
-        Ok((skype_tok, expires_in, region_gtms)) => {
-            config.set_skype_token(skype_tok, expires_in);
-            if let Some(gtms) = region_gtms {
-                config.set_region_gtms(gtms);
+        .map_err(|e| {
+            // Burned/expired/revoked refresh token: distinct, non-retryable.
+            let typed_invalid = matches!(
+                &e,
+                RequestTokenError::ServerResponse(r)
+                    if matches!(r.error(), BasicErrorResponseType::InvalidGrant)
+            );
+            if typed_invalid || format!("{:#}", &e).contains("invalid_grant") {
+                let detail = match &e {
+                    RequestTokenError::ServerResponse(r) => r
+                        .error_description()
+                        .map(|d| d.lines().next().unwrap_or("").to_string())
+                        .filter(|d| !d.is_empty())
+                        .unwrap_or_else(|| "invalid_grant".to_string()),
+                    _ => "invalid_grant".to_string(),
+                };
+                return anyhow::Error::new(ReauthRequired { detail });
             }
-            tracing::info!("Skype token refreshed");
-        }
-        Err(e) => {
-            tracing::warn!("Skype token exchange failed during refresh: {:#}", e);
-        }
+            anyhow::Error::new(e).context("Failed to refresh AAD token")
+        })?;
+
+    Ok(RefreshedTokens {
+        access_token: token_response.access_token().secret().to_string(),
+        expires_in: token_response.expires_in().map(|d| d.as_secs()),
+        refresh_token: token_response
+            .refresh_token()
+            .map(|rt| rt.secret().to_string()),
+    })
+}
+
+/// The stored refresh token was rejected by the IdP (`invalid_grant`:
+/// burned, expired, or revoked). Not retryable: the user must sign in
+/// again. Callers must fail fast with a re-auth message, never retry.
+#[derive(Debug, thiserror::Error)]
+#[error("stored session expired (refresh token rejected: {detail}); run `teams-cli login` to sign in again")]
+pub struct ReauthRequired {
+    /// First line of the IdP error description (never secrets).
+    pub detail: String,
+}
+
+/// True when `e` is (or wraps) [`ReauthRequired`); the message-substring
+/// fallback covers grant errors already formatted as `… invalid_grant …`
+/// (see `post_token_grant`), which carry no typed marker.
+pub fn is_reauth_required(e: &anyhow::Error) -> bool {
+    if e.downcast_ref::<ReauthRequired>().is_some() {
+        return true;
+    }
+    format!("{:#}", e).contains("invalid_grant")
+}
+
+/// Per-profile in-process single-flight: concurrent `refresh_for` calls in
+/// this process serialize here; cross-process callers serialize on the
+/// profile lockfile (held across the SAME critical section, so the two
+/// compose into one global exclusion per profile).
+fn inflight_for(profile: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+    static SLOTS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
+    > = std::sync::OnceLock::new();
+    let map = SLOTS.get_or_init(Default::default);
+    let mut guard = map.lock().unwrap_or_else(|e| e.into_inner());
+    guard
+        .entry(profile.to_string())
+        .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
+        .clone()
+}
+
+/// Acquire the profile lockfile without stalling the async runtime
+/// (blocking `flock` runs on the blocking pool).
+async fn acquire_profile_lock(profile: &str) -> Result<crate::config::ProfileFileLock> {
+    let owned = profile.to_string();
+    tokio::task::spawn_blocking(move || Config::lock_profile_exclusive(&owned))
+        .await
+        .context("profile lock task failed")?
+}
+
+/// [`refresh_for`] with an injectable main grant and a derived-token switch
+/// (tests pass `false`: no Skype/Graph/IC3/recorder calls, zero traffic).
+///
+/// Race protocol (all under per-profile in-process single-flight AND the
+/// cross-process profile lockfile, held across read-exchange-write):
+///  1. snapshot the stored refresh token;
+///  2. re-read from disk once the locks are held; if the refresh token
+///     rotated (or a fresh access token appeared) another process already
+///     refreshed -> adopt it (invalidate cache) and return WITHOUT any
+///     exchange;
+///  3. otherwise exchange exactly once;
+///  4. NEVER persist on failure (no downgrade writes: a burned store stays
+///     exactly as it was, so a later sign-in is not clobbered).
+async fn refresh_for_with<E, F>(profile: &str, exchange: E, acquire_derived: bool) -> Result<bool>
+where
+    E: Fn(String) -> F + Send + Sync,
+    F: std::future::Future<Output = Result<RefreshedTokens>> + Send,
+{
+    let snapshot = Config::load_cached_for(profile)?;
+    let refresh_token_str = match snapshot.get_refresh_token() {
+        Some(rt) => rt,
+        None => return Ok(false),
+    };
+    let access_was_valid = snapshot.get_access_token().is_some_and(|t| !t.is_expired());
+
+    // (a) in-process single-flight.
+    let slot = inflight_for(profile);
+    let _inproc = slot.lock().await;
+    // (b) cross-process exclusion, held across re-read + exchange + write.
+    let _file = acquire_profile_lock(profile).await?;
+
+    // (c) re-read under the locks; skip the exchange when already fresh.
+    let fresh = Config::load_for(profile)?;
+    let rt_now = fresh.get_refresh_token();
+    let access_now_valid = fresh.get_access_token().is_some_and(|t| !t.is_expired());
+    if rt_now.as_deref() != Some(refresh_token_str.as_str())
+        || (!access_was_valid && access_now_valid)
+    {
+        // Winner already persisted: adopt, no exchange. (`rt_now == None`
+        // lands here too — signed out elsewhere — returning Ok(false).)
+        Config::invalidate_cache_for(profile);
+        return Ok(rt_now.is_some());
     }
 
-    // Acquire Graph API token (separate audience)
-    let rt_for_graph = config.get_refresh_token().unwrap_or_default();
-    if !rt_for_graph.is_empty() {
-        match acquire_graph_token(&client, &rt_for_graph).await {
-            Ok((graph_tok, expires_in)) => {
-                config.set_graph_token(graph_tok, expires_in);
-                tracing::info!("Graph token acquired");
+    // (d) exactly one exchange; on failure persist NOTHING.
+    let new_tokens = exchange(refresh_token_str).await?;
+    let mut config = fresh;
+
+    config.set_access_token(new_tokens.access_token, new_tokens.expires_in);
+
+    if let Some(new_rt) = new_tokens.refresh_token {
+        config.set_refresh_token(new_rt);
+    }
+
+    // Derived tokens (Skype/Graph/IC3/recorder): live traffic, skipped
+    // by stub-IdP tests (`acquire_derived = false`).
+    if acquire_derived {
+        let auth_config = AuthConfig::default();
+        let client = build_client(&auth_config)?;
+
+        // Exchange for Skype token
+        let aad_token = config
+            .get_access_token()
+            .map(|t| t.token)
+            .unwrap_or_default();
+        match exchange_skype_token(&aad_token, false).await {
+            Ok((skype_tok, expires_in, region_gtms)) => {
+                config.set_skype_token(skype_tok, expires_in);
+                if let Some(gtms) = region_gtms {
+                    config.set_region_gtms(gtms);
+                }
+                tracing::info!("Skype token refreshed");
             }
             Err(e) => {
-                tracing::warn!("Graph token acquisition failed: {:#}", e);
+                tracing::warn!("Skype token exchange failed during refresh: {:#}", e);
             }
         }
-    }
 
-    // Acquire IC3 token (for Trouter WebSocket auth)
-    let rt_for_ic3 = config.get_refresh_token().unwrap_or_default();
-    if !rt_for_ic3.is_empty() {
-        match acquire_ic3_token(&client, &rt_for_ic3).await {
-            Ok((ic3_tok, expires_in)) => {
-                config.set_ic3_token(ic3_tok, expires_in);
-                tracing::info!("IC3 token acquired");
-            }
-            Err(e) => {
-                tracing::warn!("IC3 token acquisition failed: {:#}", e);
+        // Acquire Graph API token (separate audience)
+        let rt_for_graph = config.get_refresh_token().unwrap_or_default();
+        if !rt_for_graph.is_empty() {
+            match acquire_graph_token(&client, &rt_for_graph).await {
+                Ok((graph_tok, expires_in)) => {
+                    config.set_graph_token(graph_tok, expires_in);
+                    tracing::info!("Graph token acquired");
+                }
+                Err(e) => {
+                    tracing::warn!("Graph token acquisition failed: {:#}", e);
+                }
             }
         }
-    }
 
-    // Acquire recorder service token (for call recording)
-    let rt_for_recorder = config.get_refresh_token().unwrap_or_default();
-    if !rt_for_recorder.is_empty() {
-        match acquire_recorder_token(&client, &rt_for_recorder).await {
-            Ok((rec_tok, expires_in)) => {
-                config.set_recorder_token(rec_tok, expires_in);
-                tracing::info!("Recorder token acquired");
+        // Acquire IC3 token (for Trouter WebSocket auth)
+        let rt_for_ic3 = config.get_refresh_token().unwrap_or_default();
+        if !rt_for_ic3.is_empty() {
+            match acquire_ic3_token(&client, &rt_for_ic3).await {
+                Ok((ic3_tok, expires_in)) => {
+                    config.set_ic3_token(ic3_tok, expires_in);
+                    tracing::info!("IC3 token acquired");
+                }
+                Err(e) => {
+                    tracing::warn!("IC3 token acquisition failed: {:#}", e);
+                }
             }
-            Err(e) => {
-                tracing::warn!("Recorder token acquisition failed: {:#}", e);
+        }
+
+        // Acquire recorder service token (for call recording)
+        let rt_for_recorder = config.get_refresh_token().unwrap_or_default();
+        if !rt_for_recorder.is_empty() {
+            match acquire_recorder_token(&client, &rt_for_recorder).await {
+                Ok((rec_tok, expires_in)) => {
+                    config.set_recorder_token(rec_tok, expires_in);
+                    tracing::info!("Recorder token acquired");
+                }
+                Err(e) => {
+                    tracing::warn!("Recorder token acquisition failed: {:#}", e);
+                }
             }
         }
     }
@@ -214,9 +353,18 @@ pub async fn login(force: bool) -> Result<()> {
                         tracing::info!(
                             "AAD token valid but some derived tokens missing, refreshing..."
                         );
-                        if let Ok(true) = refresh().await {
-                            println!("Tokens refreshed (acquired missing derived tokens).");
-                            return Ok(());
+                        match refresh().await {
+                            Ok(true) => {
+                                println!("Tokens refreshed (acquired missing derived tokens).");
+                                return Ok(());
+                            }
+                            Err(e) if is_reauth_required(&e) => {
+                                // Burned stored token, access still valid for
+                                // now: single attempt, no retry; re-auth can
+                                // wait until expiry (or --force now).
+                                eprintln!("Stored refresh token rejected ({:#}); access token still valid. Run with --force to sign in again now.", e);
+                            }
+                            _ => {}
                         }
                     }
                     println!(
@@ -234,7 +382,16 @@ pub async fn login(force: bool) -> Result<()> {
                         }
                         Ok(false) => {}
                         Err(e) => {
-                            tracing::warn!("Refresh failed, falling back to device code: {:#}", e);
+                            if is_reauth_required(&e) {
+                                // Single attempt, no retry: the device-code
+                                // flow below IS the re-auth.
+                                eprintln!("Stored session expired ({:#}); signing in again.", e);
+                            } else {
+                                tracing::warn!(
+                                    "Refresh failed, falling back to device code: {:#}",
+                                    e
+                                );
+                            }
                         }
                     }
                 }
@@ -486,4 +643,341 @@ pub async fn status() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// TOKEN-REFRESH-RACE tests: stub IdP (rotating single-use refresh
+/// tokens, in-process) + temp-dir stores (`OST_CONFIG_DIR`). ZERO live
+/// traffic: `acquire_derived = false`, no HTTP anywhere in this module.
+#[cfg(test)]
+mod refresh_race_tests {
+    use super::*;
+    use crate::config::Config;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    /// True when this process is the spawned child for `entry` (env
+    /// `TOKENRACE_CHILD` matches): the caller runs its body. Otherwise
+    /// spawns that child (which runs ONLY this test via the harness
+    /// filter, so the env swap below never shares a process with store
+    /// tests like `config::tests`), asserts it passed, and returns false.
+    fn in_spawned_child(entry: &str) -> bool {
+        if std::env::var("TOKENRACE_CHILD").as_deref() == Ok(entry) {
+            return true;
+        }
+        let exe = std::env::current_exe().expect("test exe");
+        let out = std::process::Command::new(&exe)
+            .arg("--nocapture")
+            .arg(entry)
+            .env("TOKENRACE_CHILD", entry)
+            .output()
+            .expect("spawn child");
+        assert!(
+            out.status.success(),
+            "child {entry} failed:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        false
+    }
+
+    /// Serializes the tests in this module within one process (they swap
+    /// the process-wide `OST_CONFIG_DIR`).
+    static STORE_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Temp-dir store with a unique profile. Restores the previous
+    /// `OST_CONFIG_DIR` on drop. Hold `STORE_LOCK` while alive.
+    struct TempStore {
+        _guard: std::sync::MutexGuard<'static, ()>,
+        prev: Option<std::ffi::OsString>,
+        profile: String,
+    }
+
+    impl TempStore {
+        fn new(tag: &str) -> Self {
+            let guard = STORE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let prev = std::env::var_os("OST_CONFIG_DIR");
+            let dir = std::env::temp_dir().join(format!(
+                "tokenrace-{}-{}-{}",
+                tag,
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("clock")
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&dir).expect("temp store dir");
+            std::env::set_var("OST_CONFIG_DIR", &dir);
+            let profile = format!("tokenrace-{}", tag);
+            Config::invalidate_cache_for(&profile);
+            Self {
+                _guard: guard,
+                prev,
+                profile,
+            }
+        }
+
+        /// Seed an expired access token + `rt` as the stored refresh token.
+        fn seed(&self, rt: &str) {
+            let mut cfg = Config::default();
+            cfg.set_access_token("AT-OLD".to_string(), Some(0));
+            cfg.set_refresh_token(rt.to_string());
+            cfg.save_to(&self.profile).expect("seed store");
+        }
+    }
+
+    impl Drop for TempStore {
+        fn drop(&mut self) {
+            Config::invalidate_cache_for(&self.profile);
+            match self.prev.take() {
+                Some(v) => std::env::set_var("OST_CONFIG_DIR", v),
+                None => std::env::remove_var("OST_CONFIG_DIR"),
+            }
+        }
+    }
+
+    /// Stub IdP: single-use rotating refresh tokens. The FIRST exchange of
+    /// the current token wins and rotates it; any replay of a burned token
+    /// fails with `invalid_grant`. `delay` forces caller overlap.
+    struct StubIdP {
+        state: Mutex<StubState>,
+        exchanges: AtomicU64,
+        delay: std::time::Duration,
+    }
+
+    struct StubState {
+        current_rt: String,
+        next_id: u64,
+    }
+
+    impl StubIdP {
+        fn new(rt0: &str, delay: std::time::Duration) -> Arc<Self> {
+            Arc::new(Self {
+                state: Mutex::new(StubState {
+                    current_rt: rt0.to_string(),
+                    next_id: 1,
+                }),
+                exchanges: AtomicU64::new(0),
+                delay,
+            })
+        }
+
+        async fn exchange(self: &Arc<Self>, rt: String) -> Result<RefreshedTokens> {
+            self.exchanges.fetch_add(1, Ordering::SeqCst);
+            tokio::time::sleep(self.delay).await;
+            let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            if rt != st.current_rt {
+                anyhow::bail!("token grant failed (HTTP 400): invalid_grant burned token replay");
+            }
+            let id = st.next_id;
+            st.next_id += 1;
+            st.current_rt = format!("RT-{}", id);
+            Ok(RefreshedTokens {
+                access_token: format!("AT-{}", id),
+                expires_in: Some(3600),
+                refresh_token: Some(st.current_rt.clone()),
+            })
+        }
+    }
+
+    /// R0 failing-first: N concurrent refreshes must cost exactly ONE IdP
+    /// exchange (single-use RT). Unfixed code: every caller exchanges
+    /// (N) and last-writer-wins persists a burned token.
+    #[tokio::test]
+    async fn concurrent_refresh_costs_one_exchange() {
+        if !in_spawned_child("refresh_race_tests::concurrent_refresh_costs_one_exchange") {
+            return;
+        }
+        let store = TempStore::new("race");
+        store.seed("RT-0");
+        let stub = StubIdP::new("RT-0", std::time::Duration::from_millis(200));
+
+        let mut tasks = Vec::new();
+        for _ in 0..8 {
+            let s = stub.clone();
+            let profile = store.profile.clone();
+            tasks.push(tokio::spawn(async move {
+                refresh_for_with(
+                    &profile,
+                    move |rt| {
+                        let s = s.clone();
+                        async move { s.exchange(rt).await }
+                    },
+                    false,
+                )
+                .await
+            }));
+        }
+        let mut results = Vec::new();
+        for t in tasks {
+            results.push(t.await.expect("task"));
+        }
+        assert_eq!(
+            stub.exchanges.load(Ordering::SeqCst),
+            1,
+            "single-use RT: exactly one IdP exchange for N concurrent refreshes"
+        );
+        assert_eq!(
+            results.iter().filter(|r| matches!(r, Ok(true))).count(),
+            8,
+            "every caller must succeed"
+        );
+        // Losers adopt the winner's tokens (no burned-token persistence).
+        let final_cfg = Config::load_cached_for(&store.profile).expect("reload");
+        let rt = final_cfg.get_refresh_token().expect("stored rt");
+        assert_eq!(rt, stub.state.lock().unwrap().current_rt);
+        assert!(final_cfg
+            .get_access_token()
+            .is_some_and(|t| !t.is_expired()));
+        assert_eq!(
+            final_cfg.get_access_token().expect("at").token,
+            format!("AT-1")
+        );
+    }
+
+    /// Failure persists nothing: a burned stored token fails every caller
+    /// with `ReauthRequired` and the store file stays byte-identical (no
+    /// downgrade writes). Exchange count == N proves one attempt each and
+    /// no retry loop (a storm would exceed N).
+    #[tokio::test]
+    async fn failed_refresh_persists_nothing() {
+        if !in_spawned_child("refresh_race_tests::failed_refresh_persists_nothing") {
+            return;
+        }
+        let store = TempStore::new("fail");
+        store.seed("RT-BURNED");
+        let path = Config::config_path_for(&store.profile).expect("path");
+        let before = std::fs::read(&path).expect("seeded file");
+        let stub = StubIdP::new("RT-ELSEWHERE", std::time::Duration::from_millis(50));
+
+        let mut tasks = Vec::new();
+        for _ in 0..4 {
+            let s = stub.clone();
+            let profile = store.profile.clone();
+            tasks.push(tokio::spawn(async move {
+                refresh_for_with(
+                    &profile,
+                    move |rt| {
+                        let s = s.clone();
+                        async move { s.exchange(rt).await }
+                    },
+                    false,
+                )
+                .await
+            }));
+        }
+        let mut reauth = 0;
+        for t in tasks {
+            let r = t.await.expect("task");
+            let e = r.expect_err("burned token must fail");
+            assert!(is_reauth_required(&e), "must be ReauthRequired: {:#}", e);
+            reauth += 1;
+        }
+        assert_eq!(reauth, 4);
+        assert_eq!(
+            stub.exchanges.load(Ordering::SeqCst),
+            4,
+            "one attempt per caller, no retries"
+        );
+        Config::invalidate_cache_for(&store.profile);
+        assert_eq!(
+            std::fs::read(&path).expect("file"),
+            before,
+            "store untouched on failure"
+        );
+    }
+
+    #[test]
+    fn reauth_required_predicate() {
+        let typed = anyhow::Error::new(ReauthRequired { detail: "x".into() });
+        assert!(is_reauth_required(&typed));
+        let wrapped = typed.context("outer");
+        assert!(is_reauth_required(&wrapped));
+        let formatted: anyhow::Error =
+            anyhow::anyhow!("token grant failed (HTTP 400): invalid_grant nope");
+        assert!(is_reauth_required(&formatted));
+        let other: anyhow::Error = anyhow::anyhow!("connection refused");
+        assert!(!is_reauth_required(&other));
+    }
+
+    /// Child-process work for [`profile_lock_serializes_across_processes`]:
+    /// one locked read-modify-write of the shared counter. True when the
+    /// child env was present (work done). Never creates a `TempStore` (it
+    /// would swap `OST_CONFIG_DIR` away from the shared store).
+    fn do_child_increment() -> bool {
+        let Ok(spec) = std::env::var("TOKENRACE_LOCK_CHILD") else {
+            return false;
+        };
+        let (profile, counter) = spec.split_once('|').expect("spec");
+        {
+            let _held = Config::lock_profile_exclusive(profile).expect("child lock");
+            let n: u64 = std::fs::read_to_string(counter)
+                .expect("read")
+                .trim()
+                .parse()
+                .expect("num");
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            std::fs::write(counter, (n + 1).to_string()).expect("write");
+        }
+        true
+    }
+
+    /// Cross-process exclusion: N child PROCESSES (real OS processes, one
+    /// shared lockfile) read-modify-write a counter under the profile lock.
+    /// Without the `flock`, parallel readers all see 0 and the final count
+    /// is 1; with it, exactly N.
+    #[tokio::test]
+    async fn profile_lock_serializes_across_processes() {
+        if do_child_increment() {
+            return;
+        }
+        if !in_spawned_child("refresh_race_tests::profile_lock_serializes_across_processes") {
+            return;
+        }
+        let store = TempStore::new("lockx");
+        let counter = std::env::temp_dir().join(format!(
+            "tokenrace-counter-{}-{}.txt",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::write(&counter, "0").expect("counter");
+        let exe = std::env::current_exe().expect("test exe");
+        let mut kids = Vec::new();
+        for _ in 0..4 {
+            let spec = format!("{}|{}", store.profile, counter.display());
+            kids.push(
+                tokio::task::spawn_blocking({
+                    let exe = exe.clone();
+                    move || {
+                        std::process::Command::new(&exe)
+                            .arg("refresh_race_tests::lock_child_entry")
+                            .env("TOKENRACE_LOCK_CHILD", &spec)
+                            .output()
+                            .expect("spawn child")
+                    }
+                })
+                .await
+                .expect("join"),
+            );
+        }
+        for out in &kids {
+            assert!(out.status.success(), "child failed: {:?}", out);
+        }
+        let n: u64 = std::fs::read_to_string(&counter)
+            .expect("read")
+            .trim()
+            .parse()
+            .expect("num");
+        assert_eq!(n, kids.len() as u64, "no lost updates across processes");
+    }
+
+    /// Entry point for [`profile_lock_serializes_across_processes`] child
+    /// processes (matched by substring filter). With the child env set it
+    /// does the locked increment; without it (plain suite run) it passes
+    /// as a no-op and never spawns.
+    #[test]
+    fn lock_child_entry() {
+        let _ = do_child_increment();
+    }
 }
