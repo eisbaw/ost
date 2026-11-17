@@ -448,8 +448,22 @@ fn collect_thread_pins(v: &serde_json::Value, depth: usize, out: &mut Vec<Pinned
             }
         }
         serde_json::Value::Object(o) => {
+            // C6 SERVER-STATE: real threads carry `pinnedItems` entries as
+            // `{itemId, itemType}` (itemType "Message", R0 probe 11-17: the
+            // only value seen across 10 threads). `itemId` counts as an id
+            // only for message items — other item types are not bubbles and
+            // must never become strip pins. Classic keys keep old behavior.
             let id = pin_field(o, &["messageId", "messageid", "id"])
-                .filter(|s| !s.contains(['/', '?', '#', ' ']));
+                .filter(|s| !s.contains(['/', '?', '#', ' ']))
+                .or_else(|| {
+                    let t = pin_field(o, &["itemType", "itemtype"]);
+                    if t.as_deref().is_none_or(|v| v.eq_ignore_ascii_case("message")) {
+                        pin_field(o, &["itemId", "itemid"])
+                            .filter(|s| !s.contains(['/', '?', '#', ' ']))
+                    } else {
+                        None
+                    }
+                });
             match id {
                 Some(message_id) => out.push(PinnedRef {
                     message_id,
@@ -611,6 +625,129 @@ pub async fn chat_pinned_messages_data(client: &TeamsClient, chat_id: &str) -> R
     Ok((source, pins))
 }
 
+// Pin for everyone (OstMac C6 SERVER-STATE)
+// ---------------------------------------------------------------------------
+//
+// Real threads carry everyone's pins in the thread property `pinnedItems`:
+// a JSON STRING encoding a list of `{itemId, itemType}` (`itemType` is
+// "Message" — R0 probe 11-17, the only value seen across 10 threads).
+// Pinning is PUTting the same property name with the list plus the new
+// item on the THREAD endpoint (the rename pattern: PUT
+// /v1/threads/{id}/properties?name=topic — the per-user conversation
+// endpoint only shadows the property for self, R2 11-17); unpinning
+// PUTs it minus the item. The read path (`parse_thread_pins`) already
+// picks these entries up, so a pin round-trips through GET.
+
+// PUT target for one thread's `pinnedItems` property (everyone's pins).
+pub fn pinned_items_url(base: &str, chat_id: &str) -> String {
+    format!(
+        "{}/v1/threads/{}/properties?name=pinnedItems",
+        base.trim_end_matches('/'),
+        chat_id.trim()
+    )
+}
+
+/// Item objects from a raw `pinnedItems` property value: a JSON string of
+/// a list (what the thread carries), a raw list, or anything else (which
+/// yields empty — never fail a pin on a property we can't parse). Pure.
+pub fn pinned_items_from_raw(v: Option<&serde_json::Value>) -> Vec<serde_json::Value> {
+    match v {
+        Some(serde_json::Value::String(s)) => {
+            serde_json::from_str::<serde_json::Value>(s.trim())
+                .ok()
+                .and_then(|inner| inner.as_array().cloned())
+                .unwrap_or_default()
+        }
+        Some(serde_json::Value::Array(a)) => a.clone(),
+        _ => Vec::new(),
+    }
+}
+
+/// True when an item object pins `message_id` (either id spelling).
+fn pinned_item_is(item: &serde_json::Value, message_id: &str) -> bool {
+    let o = match item.as_object() {
+        Some(o) => o,
+        None => return false,
+    };
+    pin_field(o, &["itemId", "itemid", "messageId", "messageid", "id"]).as_deref() == Some(message_id)
+}
+
+/// The item list plus one message pin (dedupe: already pinned stays put).
+/// New entries carry `itemType` "Message" (the only type R0 saw). Pure.
+pub fn pinned_items_add(
+    items: &[serde_json::Value],
+    message_id: &str,
+) -> Vec<serde_json::Value> {
+    let mut out: Vec<serde_json::Value> = items.to_vec();
+    if !out.iter().any(|it| pinned_item_is(it, message_id)) {
+        out.push(serde_json::json!({"itemId": message_id, "itemType": "Message"}));
+    }
+    out
+}
+
+/// The item list minus one message pin. Pure.
+pub fn pinned_items_remove(
+    items: &[serde_json::Value],
+    message_id: &str,
+) -> Vec<serde_json::Value> {
+    items
+        .iter()
+        .filter(|it| !pinned_item_is(it, message_id))
+        .cloned()
+        .collect()
+}
+
+/// PUT body for a pin list: the property value stays a JSON string (the
+/// shape the thread carries). Pure.
+pub fn pinned_items_body(items: &[serde_json::Value]) -> serde_json::Value {
+    serde_json::json!({ "pinnedItems": serde_json::to_string(items).unwrap_or_default() })
+}
+
+/// Current `pinnedItems` item list for one chat (tolerates a missing or
+/// unparseable property as empty). GET only.
+async fn pinned_items_now(client: &TeamsClient, id: &str) -> Result<Vec<serde_json::Value>> {
+    let base = client.chat_service_url();
+    let body: serde_json::Value = client.chat_get(&thread_pins_url(&base, id)).await?.json().await?;
+    let raw = body.get("properties").and_then(|p| p.get("pinnedItems"));
+    Ok(pinned_items_from_raw(raw))
+}
+
+/// Pin one message for everyone in the chat: PUT `pinnedItems` with the
+/// message appended. Blank/unsafe ids are rejected before any network.
+pub async fn pin_message_with_client(client: &TeamsClient, chat_id: &str, message_id: &str) -> Result<()> {
+    let id = chat_id.trim();
+    let mid = message_id.trim();
+    let bad = |s: &str| s.is_empty() || s.contains(['/', '?', '#', ' ']);
+    if bad(id) || bad(mid) {
+        bail!("bad chat or message id");
+    }
+    let now = pinned_items_now(client, id).await?;
+    let url = pinned_items_url(&client.chat_service_url(), id);
+    client.chat_put(&url, &pinned_items_body(&pinned_items_add(&now, mid))).await?;
+    Ok(())
+}
+
+/// Unpin one message for everyone: PUT `pinnedItems` minus the message.
+/// Same id rules as pinning.
+pub async fn unpin_thread_message_with_client(
+    client: &TeamsClient,
+    chat_id: &str,
+    message_id: &str,
+) -> Result<()> {
+    let id = chat_id.trim();
+    let mid = message_id.trim();
+    let bad = |s: &str| s.is_empty() || s.contains(['/', '?', '#', ' ']);
+    if bad(id) || bad(mid) {
+        bail!("bad chat or message id");
+    }
+    let now = pinned_items_now(client, id).await?;
+    let url = pinned_items_url(&client.chat_service_url(), id);
+    client
+        .chat_put(&url, &pinned_items_body(&pinned_items_remove(&now, mid)))
+        .await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod pinned_tests {
     use super::*;
@@ -699,5 +836,54 @@ mod pinned_tests {
     fn pin_paths() {
         assert_eq!(thread_pins_url("https://h", " 19:a@thread.v2 "), "https://h/v1/threads/19:a@thread.v2?view=msnp24Equivalent");
         assert_eq!(graph_pins_path("19:a@thread.v2"), "/chats/19:a@thread.v2/pinnedMessages?$expand=message");
+        assert_eq!(pinned_items_url("https://h", "19:a@thread.v2"), "https://h/v1/threads/19:a@thread.v2/properties?name=pinnedItems");
+    }
+
+    #[test]
+    fn thread_pins_from_pinned_items_shape() {
+        // R0 shape (live thread 11-17): `pinnedItems` is a JSON string of
+        // `{itemId, itemType}` objects. Message items pin; other item types
+        // never become pins; classic keys keep working beside them.
+        let raw = serde_json::json!([
+            {"itemId": "1727000000100", "itemType": "Message"},
+            {"itemId": "file-9", "itemType": "File"},
+            {"messageId": "1727000000200"},
+            {"itemId": "1727000000300"}
+        ])
+        .to_string();
+        let thread = serde_json::json!({"properties": {"pinnedItems": raw}});
+        let ids: Vec<_> = parse_thread_pins(&thread).into_iter().map(|p| p.message_id).collect();
+        assert_eq!(ids, ["1727000000100", "1727000000200", "1727000000300"]);
+    }
+
+    #[test]
+    fn pinned_items_add_remove_round_trip() {
+        let start = pinned_items_from_raw(None);
+        assert!(start.is_empty());
+        let garbage = pinned_items_from_raw(Some(&serde_json::json!("not json")));
+        assert!(garbage.is_empty());
+
+        let one = pinned_items_add(&start, "1727000000100");
+        assert_eq!(one.len(), 1);
+        // Dedupe: pinning twice keeps one entry.
+        let one_again = pinned_items_add(&one, "1727000000100");
+        assert_eq!(one_again.len(), 1);
+        let two = pinned_items_add(&one, "1727000000200");
+        assert_eq!(two.len(), 2);
+
+        // PUT body keeps the thread's shape: JSON string under the key.
+        let body = pinned_items_body(&two);
+        let encoded = body.get("pinnedItems").and_then(|v| v.as_str()).unwrap();
+        let back: Vec<serde_json::Value> = serde_json::from_str(encoded).unwrap();
+        assert_eq!(back.len(), 2);
+        // Removal matches both id spellings.
+        let legacy = vec![serde_json::json!({"messageId": "1727000000200"})];
+        let removed = pinned_items_remove(&[one[0].clone(), legacy[0].clone()], "1727000000100");
+        assert_eq!(removed, legacy);
+        assert!(pinned_items_remove(&two, "1727000000999").len() == 2);
+        // Raw list value (not a string) parses too.
+        let arr = serde_json::json!([{"itemId": "5", "itemType": "Message"}]);
+        assert_eq!(pinned_items_from_raw(Some(&arr)).len(), 1);
     }
 }
+
