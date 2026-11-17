@@ -159,6 +159,18 @@ impl Config {
     /// Callers must not hold this across `.await` on an async worker:
     /// acquire it inside `spawn_blocking`, then hold the guard.
     pub fn lock_profile_exclusive(profile: &str) -> Result<ProfileFileLock> {
+        Self::try_lock_profile_exclusive(profile, std::time::Duration::MAX)
+    }
+
+    /// Try to acquire the profile's lockfile, waiting up to `wait` (50ms
+    /// polls of non-blocking `flock`). A holder hung mid-exchange no
+    /// longer stalls waiters forever: on timeout this returns a typed
+    /// [`ProfileBusy`] (retryable — contention is NOT a burned
+    /// credential, so it must never map to `ReauthRequired`).
+    pub fn try_lock_profile_exclusive(
+        profile: &str,
+        wait: std::time::Duration,
+    ) -> Result<ProfileFileLock> {
         let path = Self::lock_path_for(profile)?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).context("Failed to create config directory")?;
@@ -172,18 +184,31 @@ impl Config {
         #[cfg(unix)]
         {
             use std::os::unix::io::AsRawFd;
-            let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
-            if rc != 0 {
-                return Err(std::io::Error::last_os_error())
-                    .context("Failed to lock profile lockfile");
+            let start = std::time::Instant::now();
+            loop {
+                let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+                if rc == 0 {
+                    return Ok(ProfileFileLock { _file: file });
+                }
+                let err = std::io::Error::last_os_error();
+                if err.kind() != std::io::ErrorKind::WouldBlock {
+                    return Err(err).context("Failed to lock profile lockfile");
+                }
+                if start.elapsed() >= wait {
+                    return Err(anyhow::Error::new(ProfileBusy {
+                        profile: profile.to_string(),
+                        waited: wait,
+                    }));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
             }
         }
         #[cfg(not(unix))]
         {
             let _ = &file;
+            let _ = &wait;
             anyhow::bail!("profile file locking is unix-only");
         }
-        Ok(ProfileFileLock { _file: file })
     }
 
     /// Save to one profile's file (0600, cache write-through).
@@ -259,6 +284,23 @@ impl Config {
 /// also holding the refresh single-flight (see `oauth::refresh_for_with`).
 pub struct ProfileFileLock {
     _file: std::fs::File,
+}
+
+/// The profile lockfile stayed held for the whole wait: another process
+/// is mid-refresh (or hung). Retryable — never a burned credential, so
+/// callers must NOT map this to a re-auth message.
+#[derive(Debug, thiserror::Error)]
+#[error("profile '{profile}' refresh already in progress (lock busy after {waited:.0?}); retry")]
+pub struct ProfileBusy {
+    /// Which profile's lock was contended (never secrets).
+    pub profile: String,
+    /// How long the waiter held out before failing loud.
+    pub waited: std::time::Duration,
+}
+
+/// True when `e` is (or wraps) [`ProfileBusy`].
+pub fn is_profile_busy(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<ProfileBusy>().is_some()
 }
 
 /// (file size, mtime) when the config file exists; `None` when absent
