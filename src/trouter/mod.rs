@@ -78,7 +78,7 @@ pub async fn connect_and_run() -> Result<()> {
 /// `DisconnectReason::Error` when the connection should be retried.
 async fn connect_and_run_inner() -> Result<DisconnectReason> {
     // Reload config each attempt so we pick up refreshed tokens.
-    let config = Config::load().context("Failed to load config")?;
+    let config = Config::load_cached().context("Failed to load config")?;
 
     let skype_token = config
         .get_skype_token()
@@ -236,6 +236,7 @@ async fn handle_frame(frame: &str, http: &reqwest::Client, skype_token: &str) {
                 "[MSG]"
             };
             println!("{} Event: {}", prefix, json_str);
+            crate::event_hub::publish(json_str.to_string());
 
             // If this is a call event, try to parse and auto-answer.
             if is_call {

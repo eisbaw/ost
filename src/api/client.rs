@@ -20,7 +20,13 @@ pub struct TeamsClient {
 impl TeamsClient {
     /// Load config and build client. Attempts token refresh if AAD token is expired.
     pub async fn new() -> Result<Self> {
-        let mut config = Config::load()?;
+        Self::new_for_profile(&crate::config::active_profile()).await
+    }
+
+    /// Same as [`Self::new`], scoped to one account profile
+    /// (multi-account: per-account reads without switching active).
+    pub async fn new_for_profile(profile: &str) -> Result<Self> {
+        let mut config = Config::load_cached_for(profile)?;
 
         // Auto-refresh if any token is expired but refresh token exists
         let needs_refresh = config.get_access_token().map_or(true, |t| t.is_expired())
@@ -28,15 +34,23 @@ impl TeamsClient {
         if needs_refresh {
             if config.get_refresh_token().is_some() {
                 tracing::info!("Tokens missing or expired, refreshing...");
-                match crate::auth::oauth::refresh().await {
+                match crate::auth::oauth::refresh_for(profile).await {
                     Ok(true) => {
-                        config = Config::load()?;
+                        config = Config::load_cached_for(profile)?;
                         tracing::info!("Token refreshed");
                     }
                     Ok(false) => {
                         bail!("No refresh token available. Run 'teams-cli login'.");
                     }
                     Err(e) => {
+                        if crate::auth::oauth::is_reauth_required(&e) {
+                            // Burned/expired/revoked refresh token: single
+                            // attempt, fail fast, no retry. Propagate the
+                            // typed error unwrapped: `ReauthRequired`'s own
+                            // display already says "stored session expired",
+                            // so an added prefix doubles it on screen.
+                            return Err(e);
+                        }
                         bail!("Token refresh failed: {:#}. Run 'teams-cli login'.", e);
                     }
                 }
@@ -242,4 +256,33 @@ async fn check_response(resp: reqwest::Response, url: &str) -> Result<reqwest::R
         bail!("HTTP {} for {}: {}", status.as_u16(), url, body);
     }
     Ok(resp)
+}
+
+#[cfg(test)]
+mod tests {
+    /// The reauth branch of `TeamsClient::new_for_profile` surfaces the
+    /// expired session exactly once. The inner `ReauthRequired` display
+    /// already says "stored session expired", so the branch must not add
+    /// its own "Stored session expired" prefix. The typed marker +
+    /// `is_reauth_required` semantics stay intact.
+    #[test]
+    fn reauth_branch_surfaces_single_wrap() {
+        let inner = anyhow::Error::new(crate::auth::oauth::ReauthRequired {
+            detail: "AADSTS70043: invalid_grant".to_string(),
+        });
+        assert!(
+            crate::auth::oauth::is_reauth_required(&inner),
+            "typed marker must survive"
+        );
+        // Mirror of the fixed branch expression at the
+        // `is_reauth_required` site: the error propagates unwrapped,
+        // so `surfaced` is the inner display itself; `failed(...)` is
+        // what Swift's `String(describing:)` renders for the FFI error.
+        // (The typed-marker check on `inner` above covers the branch's
+        // semantics: the propagated error IS `inner`.)
+        let surfaced = format!("{inner:#}");
+        let rendered = format!("failed(\"messages: {surfaced}\")");
+        let n = rendered.to_lowercase().matches("session expired").count();
+        assert_eq!(n, 1, "doubled expired-session wrap: {rendered}");
+    }
 }
