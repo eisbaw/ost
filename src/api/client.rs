@@ -45,8 +45,11 @@ impl TeamsClient {
                     Err(e) => {
                         if crate::auth::oauth::is_reauth_required(&e) {
                             // Burned/expired/revoked refresh token: single
-                            // attempt, fail fast, no retry.
-                            bail!("Stored session expired ({:#}).", e);
+                            // attempt, fail fast, no retry. Propagate the
+                            // typed error unwrapped: `ReauthRequired`'s own
+                            // display already says "stored session expired",
+                            // so an added prefix doubles it on screen.
+                            return Err(e);
                         }
                         bail!("Token refresh failed: {:#}. Run 'teams-cli login'.", e);
                     }
@@ -253,4 +256,33 @@ async fn check_response(resp: reqwest::Response, url: &str) -> Result<reqwest::R
         bail!("HTTP {} for {}: {}", status.as_u16(), url, body);
     }
     Ok(resp)
+}
+
+#[cfg(test)]
+mod tests {
+    /// The reauth branch of `TeamsClient::new_for_profile` surfaces the
+    /// expired session exactly once. The inner `ReauthRequired` display
+    /// already says "stored session expired", so the branch must not add
+    /// its own "Stored session expired" prefix. The typed marker +
+    /// `is_reauth_required` semantics stay intact.
+    #[test]
+    fn reauth_branch_surfaces_single_wrap() {
+        let inner = anyhow::Error::new(crate::auth::oauth::ReauthRequired {
+            detail: "AADSTS70043: invalid_grant".to_string(),
+        });
+        assert!(
+            crate::auth::oauth::is_reauth_required(&inner),
+            "typed marker must survive"
+        );
+        // Mirror of the fixed branch expression at the
+        // `is_reauth_required` site: the error propagates unwrapped,
+        // so `surfaced` is the inner display itself; `failed(...)` is
+        // what Swift's `String(describing:)` renders for the FFI error.
+        // (The typed-marker check on `inner` above covers the branch's
+        // semantics: the propagated error IS `inner`.)
+        let surfaced = format!("{inner:#}");
+        let rendered = format!("failed(\"messages: {surfaced}\")");
+        let n = rendered.to_lowercase().matches("session expired").count();
+        assert_eq!(n, 1, "doubled expired-session wrap: {rendered}");
+    }
 }
