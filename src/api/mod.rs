@@ -1,6 +1,7 @@
 //! API client module for Microsoft Teams
 
 pub mod apps;
+mod breakout;
 mod chat;
 pub mod client;
 mod graph;
@@ -13,6 +14,22 @@ use anyhow::Result;
 
 // Re-export data types for TUI integration
 pub use apps::{app_catalog_data, AppCatalog, AppEntitlement, AppManifest, ConfigurableTab, StaticTab, WebApplicationInfo};
+pub use breakout::{
+    add_body, add_room_data, add_url, announce_body, announce_data, announce_url, assignees_data,
+    assignees_url, bulk_assign_data, bulk_body, bulk_url, close_body, close_rooms_data, close_url, coords_to_wire,
+    create_body, create_rooms_data, create_url, decode_thread_id, delete_all_rooms_data, delete_all_url,
+    delete_room_data, delete_url, encode_coords, encode_thread_id,
+    get_room_data, get_settings_data, get_url, list_rooms_data, list_url, mt_base_for, mt_join,
+    normalize_participant, denormalize_participant, open_body, open_rooms_data, open_url,
+    parse_announce_failure, parse_assignees, parse_room_detail, parse_rooms_list, parse_settings,
+    put_settings_data, settings_body, settings_url, show_breakout_add, show_breakout_announce,
+    show_breakout_assign, show_breakout_assignees, show_breakout_close, show_breakout_create,
+    show_breakout_delete, show_breakout_delete_all, show_breakout_get, show_breakout_open,
+    show_breakout_rooms, show_breakout_settings, show_breakout_settings_set, show_breakout_update,
+    update_body, update_room_data, update_url,
+    version_suffix, AnnounceFailure, Assignee, AssigneeQuery, BreakoutParticipant, BreakoutRoomInfo,
+    MeetingCoords, RoomSettings, BREAKOUT_FALLBACK_MT, MAX_ROOMS, TOTAL_PARTICIPANTS_LIMIT,
+};
 pub use chat::{ChatInfo, MessageInfo, MessagesPage, ReactionCount, REACTION_EMOJI};
 pub use me::UserInfo;
 pub use presence::PresenceInfo;

@@ -188,10 +188,16 @@ impl TeamsClient {
     /// Apps-platform middle tier base (`region_gtms.middleTier`),
     /// falling back to the default region.
     pub fn middle_tier_url(&self) -> String {
+        self.middle_tier_base_or(DEFAULT_MIDDLE_TIER)
+    }
+
+    /// Middle tier base with a caller-chosen fallback (breakout rooms
+    /// use the RE-mapped fallback literal instead of the default region).
+    pub fn middle_tier_base_or(&self, fallback: &str) -> String {
         self.config
             .get_region_gtms()
             .and_then(|v| v.get("middleTier").and_then(|s| s.as_str()).map(String::from))
-            .unwrap_or_else(|| DEFAULT_MIDDLE_TIER.to_string())
+            .unwrap_or_else(|| fallback.to_string())
     }
 
     /// Middle-tier auth: the Teams AAD token as Bearer plus X-Skypetoken
@@ -251,6 +257,28 @@ impl TeamsClient {
         let mut req = self.mt_request(self.http.request(method, url))?.json(body);
         if let Some(c) = caller {
             req = req.header("x-ms-client-caller", c);
+        }
+        let resp = req
+            .send()
+            .await
+            .with_context(|| format!("MT {} {} failed", verb, url))?;
+        check_response(resp, url).await
+    }
+
+    /// Middle-tier call with an optional JSON body (breakout rooms: the
+    /// bodyless DELETEs send no body at all, like the web shell).
+    pub async fn mt_call(
+        &self,
+        verb: &'static str,
+        url: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<reqwest::Response> {
+        let method = reqwest::Method::from_bytes(verb.as_bytes())
+            .with_context(|| format!("bad method {}", verb))?;
+        tracing::debug!("MT {} {}", verb, url);
+        let mut req = self.mt_request(self.http.request(method, url))?;
+        if let Some(b) = body {
+            req = req.json(b);
         }
         let resp = req
             .send()
