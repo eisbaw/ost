@@ -32,7 +32,10 @@ pub use teams::ChannelInfo;
 pub use chat::{list_chats_data, read_messages_data, send_message_with_client};
 pub use me::whoami_data;
 pub use presence::get_presence_data;
-pub use tabs::{list_chat_tabs_data, list_tabs_data};
+pub use tabs::{
+    add_channel_tab_data, add_chat_tab_data, list_chat_tabs_data, list_tabs_data,
+    remove_channel_tab_data, remove_chat_tab_data, rename_channel_tab_data, rename_chat_tab_data,
+};
 pub use teams::list_teams_data;
 
 /// List recent chats (native Teams API)
@@ -78,4 +81,44 @@ pub async fn list_tabs(channel_id: &str) -> Result<()> {
 /// Dump every joined channel's tabs (one auth, read-only)
 pub async fn list_tabs_all() -> Result<()> {
     tabs::list_tabs_all().await
+}
+
+/// Add a website/app tab to a channel (prints the created tab)
+pub async fn add_channel_tab(
+    channel_id: &str,
+    name: &str,
+    app: Option<&str>,
+    url: Option<&str>,
+) -> Result<()> {
+    tabs::add_channel_tab(channel_id, name, app, url).await
+}
+
+/// Rename a channel tab (prints the updated tab)
+pub async fn rename_channel_tab(channel_id: &str, tab_id: &str, name: &str) -> Result<()> {
+    tabs::rename_channel_tab(channel_id, tab_id, name).await
+}
+
+/// Remove a channel tab
+pub async fn remove_channel_tab(channel_id: &str, tab_id: &str) -> Result<()> {
+    tabs::remove_channel_tab(channel_id, tab_id).await
+}
+
+/// Add a website/app tab to a chat (prints the created tab)
+pub async fn add_chat_tab(
+    chat_id: &str,
+    name: &str,
+    app: Option<&str>,
+    url: Option<&str>,
+) -> Result<()> {
+    tabs::add_chat_tab(chat_id, name, app, url).await
+}
+
+/// Rename a chat tab (prints the updated tab)
+pub async fn rename_chat_tab(chat_id: &str, tab_id: &str, name: &str) -> Result<()> {
+    tabs::rename_chat_tab(chat_id, tab_id, name).await
+}
+
+/// Remove a chat tab
+pub async fn remove_chat_tab(chat_id: &str, tab_id: &str) -> Result<()> {
+    tabs::remove_chat_tab(chat_id, tab_id).await
 }

@@ -137,6 +137,198 @@ pub async fn list_tabs_data(client: &TeamsClient, channel_id: &str) -> Result<Ve
     Ok(parsed.value.into_iter().map(tab_from_wire).collect())
 }
 
+// -- Tab management (write; TABS-MGMT) --
+//
+// Graph `teamsTab` writes need TeamsTab.ReadWrite.All (granted on the
+// trial tenant). Channel tabs: POST (add) / PATCH displayName
+// (configure) / DELETE (remove) under
+// `/teams/{team}/channels/{channel}/tabs`. Chat tabs: same verbs under
+// `/chats/{id}/tabs`. Only the website-tab kind is creatable without a
+// catalog install, so `url` callers get the built-in website app unless
+// they pass an explicit `app_id` (Planner, Forms, ...).
+
+/// Built-in website-tab app id (no catalog install needed to add one).
+pub const WEBSITE_APP_ID: &str = "com.microsoft.teamspace.tab.web";
+
+/// Graph path for adding a channel tab (pure so tests pin it).
+pub fn add_channel_tab_path(team_id: &str, channel_id: &str) -> String {
+    format!("/teams/{}/channels/{}/tabs", team_id.trim(), channel_id.trim())
+}
+
+/// Graph path for one channel tab (configure/remove; pure).
+pub fn channel_tab_path(team_id: &str, channel_id: &str, tab_id: &str) -> String {
+    format!(
+        "/teams/{}/channels/{}/tabs/{}",
+        team_id.trim(),
+        channel_id.trim(),
+        tab_id.trim()
+    )
+}
+
+/// Graph path for adding a chat tab (pure so tests pin it).
+pub fn add_chat_tab_path(chat_id: &str) -> String {
+    format!("/chats/{}/tabs", chat_id.trim())
+}
+
+/// Graph path for one chat tab (configure/remove; pure).
+pub fn chat_tab_path(chat_id: &str, tab_id: &str) -> String {
+    format!("/chats/{}/tabs/{}", chat_id.trim(), tab_id.trim())
+}
+
+/// POST body for a new tab: display name + app bind + configuration.
+/// `app_id` falls back to the website app; `url` seeds both content and
+/// website addresses. Pure so tests pin it.
+pub fn add_tab_body(
+    display_name: &str,
+    app_id: Option<&str>,
+    url: Option<&str>,
+) -> Result<serde_json::Value> {
+    let name = display_name.trim();
+    if name.is_empty() {
+        bail!("empty tab name");
+    }
+    let app = app_id.map(str::trim).filter(|s| !s.is_empty()).unwrap_or(WEBSITE_APP_ID);
+    if app.is_empty() {
+        bail!("empty app_id");
+    }
+    let mut config = serde_json::Map::new();
+    if let Some(u) = url.map(str::trim).filter(|s| !s.is_empty()) {
+        config.insert("contentUrl".to_string(), serde_json::Value::String(u.to_string()));
+        config.insert("websiteUrl".to_string(), serde_json::Value::String(u.to_string()));
+    }
+    Ok(serde_json::json!({
+        "displayName": name,
+        "teamsApp@odata.bind": format!("https://graph.microsoft.com/v1.0/appCatalogs/teamsApps/{}", app),
+        "configuration": serde_json::Value::Object(config),
+    }))
+}
+
+/// PATCH body for configuring a tab (rename). Pure so tests pin it.
+pub fn rename_tab_body(display_name: &str) -> Result<serde_json::Value> {
+    let name = display_name.trim();
+    if name.is_empty() {
+        bail!("empty tab name");
+    }
+    Ok(serde_json::json!({ "displayName": name }))
+}
+
+async fn parse_single_tab(resp: reqwest::Response, what: &str) -> Result<TabInfo> {
+    let wire: WireTab = resp
+        .json()
+        .await
+        .with_context(|| format!("Failed to parse {} tab response", what))?;
+    Ok(tab_from_wire(wire))
+}
+
+/// Add a website/app tab to a channel. Returns the created tab.
+pub async fn add_channel_tab_data(
+    client: &TeamsClient,
+    channel_id: &str,
+    display_name: &str,
+    app_id: Option<&str>,
+    url: Option<&str>,
+) -> Result<TabInfo> {
+    let channel_id = channel_id.trim();
+    if channel_id.is_empty() {
+        bail!("empty channel_id");
+    }
+    let body = add_tab_body(display_name, app_id, url)?;
+    let team_id = find_team_for_channel(client, channel_id).await?;
+    let resp = client.graph_post(&add_channel_tab_path(&team_id, channel_id), &body).await?;
+    parse_single_tab(resp, "created channel").await
+}
+
+/// Rename a channel tab (configure). Returns the updated tab.
+pub async fn rename_channel_tab_data(
+    client: &TeamsClient,
+    channel_id: &str,
+    tab_id: &str,
+    display_name: &str,
+) -> Result<TabInfo> {
+    let (channel_id, tab_id) = (channel_id.trim(), tab_id.trim());
+    if channel_id.is_empty() {
+        bail!("empty channel_id");
+    }
+    if tab_id.is_empty() {
+        bail!("empty tab_id");
+    }
+    let body = rename_tab_body(display_name)?;
+    let team_id = find_team_for_channel(client, channel_id).await?;
+    let resp = client
+        .graph_patch(&channel_tab_path(&team_id, channel_id, tab_id), &body)
+        .await?;
+    parse_single_tab(resp, "renamed channel").await
+}
+
+/// Remove a channel tab.
+pub async fn remove_channel_tab_data(
+    client: &TeamsClient,
+    channel_id: &str,
+    tab_id: &str,
+) -> Result<()> {
+    let (channel_id, tab_id) = (channel_id.trim(), tab_id.trim());
+    if channel_id.is_empty() {
+        bail!("empty channel_id");
+    }
+    if tab_id.is_empty() {
+        bail!("empty tab_id");
+    }
+    let team_id = find_team_for_channel(client, channel_id).await?;
+    client
+        .graph_delete(&channel_tab_path(&team_id, channel_id, tab_id))
+        .await?;
+    Ok(())
+}
+
+/// Add a website/app tab to a chat. Returns the created tab.
+pub async fn add_chat_tab_data(
+    client: &TeamsClient,
+    chat_id: &str,
+    display_name: &str,
+    app_id: Option<&str>,
+    url: Option<&str>,
+) -> Result<TabInfo> {
+    let chat_id = chat_id.trim();
+    if chat_id.is_empty() {
+        bail!("empty chat_id");
+    }
+    let body = add_tab_body(display_name, app_id, url)?;
+    let resp = client.graph_post(&add_chat_tab_path(chat_id), &body).await?;
+    parse_single_tab(resp, "created chat").await
+}
+
+/// Rename a chat tab (configure). Returns the updated tab.
+pub async fn rename_chat_tab_data(
+    client: &TeamsClient,
+    chat_id: &str,
+    tab_id: &str,
+    display_name: &str,
+) -> Result<TabInfo> {
+    let (chat_id, tab_id) = (chat_id.trim(), tab_id.trim());
+    if chat_id.is_empty() {
+        bail!("empty chat_id");
+    }
+    if tab_id.is_empty() {
+        bail!("empty tab_id");
+    }
+    let body = rename_tab_body(display_name)?;
+    let resp = client.graph_patch(&chat_tab_path(chat_id, tab_id), &body).await?;
+    parse_single_tab(resp, "renamed chat").await
+}
+
+/// Remove a chat tab.
+pub async fn remove_chat_tab_data(client: &TeamsClient, chat_id: &str, tab_id: &str) -> Result<()> {
+    let (chat_id, tab_id) = (chat_id.trim(), tab_id.trim());
+    if chat_id.is_empty() {
+        bail!("empty chat_id");
+    }
+    if tab_id.is_empty() {
+        bail!("empty tab_id");
+    }
+    client.graph_delete(&chat_tab_path(chat_id, tab_id)).await?;
+    Ok(())
+}
+
 async fn find_team_for_channel(client: &TeamsClient, channel_id: &str) -> Result<String> {
     let teams = crate::api::list_teams_data(client).await?;
     for team in &teams {
@@ -157,6 +349,68 @@ pub async fn list_tabs(channel_id: &str) -> Result<()> {
     println!("\nChannel Tabs:");
     println!("{:-<60}", "");
     print_tabs(&tabs);
+    Ok(())
+}
+
+/// Add a channel tab (prints the created tab).
+pub async fn add_channel_tab(
+    channel_id: &str,
+    name: &str,
+    app: Option<&str>,
+    url: Option<&str>,
+) -> Result<()> {
+    let client = TeamsClient::new().await?;
+    let tab = add_channel_tab_data(&client, channel_id, name, app, url).await?;
+    println!("\nAdded tab:");
+    print_tabs(std::slice::from_ref(&tab));
+    Ok(())
+}
+
+/// Rename a channel tab (prints the updated tab).
+pub async fn rename_channel_tab(channel_id: &str, tab_id: &str, name: &str) -> Result<()> {
+    let client = TeamsClient::new().await?;
+    let tab = rename_channel_tab_data(&client, channel_id, tab_id, name).await?;
+    println!("\nRenamed tab:");
+    print_tabs(std::slice::from_ref(&tab));
+    Ok(())
+}
+
+/// Remove a channel tab (prints confirmation).
+pub async fn remove_channel_tab(channel_id: &str, tab_id: &str) -> Result<()> {
+    let client = TeamsClient::new().await?;
+    remove_channel_tab_data(&client, channel_id, tab_id).await?;
+    println!("\nRemoved tab {}", tab_id.trim());
+    Ok(())
+}
+
+/// Add a chat tab (prints the created tab).
+pub async fn add_chat_tab(
+    chat_id: &str,
+    name: &str,
+    app: Option<&str>,
+    url: Option<&str>,
+) -> Result<()> {
+    let client = TeamsClient::new().await?;
+    let tab = add_chat_tab_data(&client, chat_id, name, app, url).await?;
+    println!("\nAdded tab:");
+    print_tabs(std::slice::from_ref(&tab));
+    Ok(())
+}
+
+/// Rename a chat tab (prints the updated tab).
+pub async fn rename_chat_tab(chat_id: &str, tab_id: &str, name: &str) -> Result<()> {
+    let client = TeamsClient::new().await?;
+    let tab = rename_chat_tab_data(&client, chat_id, tab_id, name).await?;
+    println!("\nRenamed tab:");
+    print_tabs(std::slice::from_ref(&tab));
+    Ok(())
+}
+
+/// Remove a chat tab (prints confirmation).
+pub async fn remove_chat_tab(chat_id: &str, tab_id: &str) -> Result<()> {
+    let client = TeamsClient::new().await?;
+    remove_chat_tab_data(&client, chat_id, tab_id).await?;
+    println!("\nRemoved tab {}", tab_id.trim());
     Ok(())
 }
 
@@ -282,6 +536,44 @@ mod tests {
         let tabs: Vec<TabInfo> = parsed.value.into_iter().map(tab_from_wire).collect();
         assert_eq!(tabs[0].app_id.as_deref(), Some("com.microsoft.teamspace.tab.planner"));
         assert_eq!(tabs[1].app_id.as_deref(), Some("app-2"));
+    }
+
+    #[test]
+    fn manage_paths_pin_scope_shape() {
+        assert_eq!(
+            add_channel_tab_path(" t ", " c "),
+            "/teams/t/channels/c/tabs"
+        );
+        assert_eq!(
+            channel_tab_path("t", "c", "tab1"),
+            "/teams/t/channels/c/tabs/tab1"
+        );
+        assert_eq!(add_chat_tab_path(" 19:x@thread.v2 "), "/chats/19:x@thread.v2/tabs");
+        assert_eq!(chat_tab_path("c", "tab1"), "/chats/c/tabs/tab1");
+    }
+
+    #[test]
+    fn add_body_names_app_and_urls() {
+        let b = add_tab_body(" Dashboard ", None, Some("https://example.com/app")).unwrap();
+        assert_eq!(b["displayName"], "Dashboard");
+        assert_eq!(
+            b["teamsApp@odata.bind"],
+            "https://graph.microsoft.com/v1.0/appCatalogs/teamsApps/com.microsoft.teamspace.tab.web"
+        );
+        assert_eq!(b["configuration"]["contentUrl"], "https://example.com/app");
+        assert_eq!(b["configuration"]["websiteUrl"], "https://example.com/app");
+        // Explicit app id (Planner, Forms) overrides the website default.
+        let p = add_tab_body("Plan", Some("com.microsoft.teamspace.tab.planner"), None).unwrap();
+        assert!(p["teamsApp@odata.bind"].as_str().unwrap().ends_with("tab.planner"));
+        assert!(p["configuration"].as_object().unwrap().is_empty());
+        assert!(add_tab_body("  ", None, None).is_err());
+    }
+
+    #[test]
+    fn rename_body_carries_display_name_only() {
+        let b = rename_tab_body(" Renamed ").unwrap();
+        assert_eq!(b, serde_json::json!({ "displayName": "Renamed" }));
+        assert!(rename_tab_body("").is_err());
     }
 
     #[test]
