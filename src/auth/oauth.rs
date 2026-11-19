@@ -391,6 +391,40 @@ where
     Ok(true)
 }
 
+/// Graph delegated scopes requested at device-code consent time
+/// (SCOPE-EXPAND lane, 2026-11-19).
+///
+/// WHY: five live lanes hit 403 walls on one root cause — the device
+/// token carries only the app's current consented set, and that set comes
+/// from THIS request, not from re-logging in. Extending this list is what
+/// broadens the grant; the owner re-consents once (device flow) and the
+/// blocked lanes re-run green.
+///
+/// Ordering constraint: the v2.0 endpoint returns the initial access token
+/// for the resource named by the FIRST scope, so the Skype resource scope
+/// stays first and the fresh AAD token keeps working for the authsvc Skype
+/// exchange below. The refresh token carries consent for every scope here;
+/// [`acquire_graph_token`] redeems `graph/.default` from that same grant,
+/// so no other code path needs to change.
+pub const DEVICE_REQUEST_GRAPH_SCOPES: &[&str] = &[
+    // webinarslive: POST + GET /solutions/virtualEvents/webinars both 403.
+    "https://graph.microsoft.com/VirtualEvent.ReadWrite",
+    // sigprove: POST /me/onlineMeetings + /communications/onlineMeetings 403.
+    "https://graph.microsoft.com/OnlineMeetings.ReadWrite",
+    // channelsprivlive: archive/unarchive 403 names this scope.
+    "https://graph.microsoft.com/ChannelSettings.ReadWrite.All",
+    // channelsprivlive: channel delete 403 names this scope
+    // (Group.ReadWrite.All below is the documented alternative).
+    "https://graph.microsoft.com/Channel.Delete.All",
+    // teammodlive: PATCH /groups (visibility) 403; also channel-delete alternative.
+    "https://graph.microsoft.com/Group.ReadWrite.All",
+    // serverreprobe: GET /me/chats 403.
+    "https://graph.microsoft.com/Chat.ReadWrite",
+    // serverreprobe: GET beta /me/teamwork 403 names both scopes.
+    "https://graph.microsoft.com/UserTeamwork.Read",
+    "https://graph.microsoft.com/User.Read.All",
+];
+
 /// Perform OAuth2 login flow
 pub async fn login(force: bool) -> Result<()> {
     {
@@ -459,12 +493,19 @@ pub async fn login(force: bool) -> Result<()> {
     // Use device code flow for CLI
     tracing::info!("Initiating device code flow...");
 
-    let device_auth_response: StandardDeviceAuthorizationResponse = client
+    // Skype resource scope FIRST: the v2.0 endpoint audiences the initial
+    // access token to the resource of the first scope, and the authsvc
+    // Skype exchange below needs that audience unchanged.
+    let mut device_request = client
         .exchange_device_code()?
         .add_scope(Scope::new(
             "https://api.spaces.skype.com/.default".to_string(),
         ))
-        .add_scope(Scope::new("offline_access".to_string()))
+        .add_scope(Scope::new("offline_access".to_string()));
+    for scope in DEVICE_REQUEST_GRAPH_SCOPES {
+        device_request = device_request.add_scope(Scope::new(scope.to_string()));
+    }
+    let device_auth_response: StandardDeviceAuthorizationResponse = device_request
         .request_async(oauth2::reqwest::async_http_client)
         .await
         .context("Failed to request device code")?;
@@ -980,6 +1021,59 @@ mod refresh_race_tests {
         assert!(is_reauth_required(&formatted));
         let other: anyhow::Error = anyhow::anyhow!("connection refused");
         assert!(!is_reauth_required(&other));
+    }
+
+    /// SCOPE-EXPAND pin: the device-code consent request must carry exactly
+    /// this scope set — the two pre-existing scopes plus the eight
+    /// verified-missing Graph delegated scopes. Any add/remove/reorder here
+    /// changes what the owner consents to at re-login, so fail loud.
+    #[test]
+    fn device_request_scope_set_pinned() {
+        // Pre-existing scopes (unchanged behavior anchor).
+        let base = ["https://api.spaces.skype.com/.default", "offline_access"];
+        // Verified-missing Graph scopes, one per blocked lane (see
+        // DEVICE_REQUEST_GRAPH_SCOPES docs). Full-URL form: the request
+        // spans two resources and short names would be ambiguous.
+        let added = [
+            "https://graph.microsoft.com/VirtualEvent.ReadWrite",
+            "https://graph.microsoft.com/OnlineMeetings.ReadWrite",
+            "https://graph.microsoft.com/ChannelSettings.ReadWrite.All",
+            "https://graph.microsoft.com/Channel.Delete.All",
+            "https://graph.microsoft.com/Group.ReadWrite.All",
+            "https://graph.microsoft.com/Chat.ReadWrite",
+            "https://graph.microsoft.com/UserTeamwork.Read",
+            "https://graph.microsoft.com/User.Read.All",
+        ];
+        // Exact set, exact order (Skype first: fixes the access-token audience).
+        let expected: Vec<&str> = base.into_iter().chain(added).collect();
+        let actual: Vec<&str> = base
+            .into_iter()
+            .chain(DEVICE_REQUEST_GRAPH_SCOPES.iter().copied())
+            .collect();
+        assert_eq!(
+            actual, expected,
+            "device consent scope set changed: {actual:?}"
+        );
+        assert_eq!(
+            DEVICE_REQUEST_GRAPH_SCOPES.len(),
+            8,
+            "additions must stay minimal (8): {:?}",
+            DEVICE_REQUEST_GRAPH_SCOPES
+        );
+        // Hygiene: no duplicates, no blanks, no graph /.default (explicit only).
+        let mut seen = std::collections::HashSet::new();
+        for s in base
+            .into_iter()
+            .chain(DEVICE_REQUEST_GRAPH_SCOPES.iter().copied())
+        {
+            assert!(!s.trim().is_empty(), "blank scope requested");
+            assert!(!s.contains(' '), "scope contains whitespace: {s}");
+            assert!(seen.insert(s), "duplicate scope requested: {s}");
+        }
+        assert!(
+            !DEVICE_REQUEST_GRAPH_SCOPES.contains(&"https://graph.microsoft.com/.default"),
+            "graph scopes must stay explicit, never /.default"
+        );
     }
 
     /// Child-process work for [`profile_lock_serializes_across_processes`]:
