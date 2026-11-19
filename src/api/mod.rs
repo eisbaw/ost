@@ -38,6 +38,7 @@ pub use channel_moderation::{
     replies_perm, set_moderation, show_moderation, thread_settings_data, thread_settings_thread_url,
     thread_settings_url, update_moderation_data,
     ChannelModeration, ThreadChannelSettings, CHANNEL_SETTINGS_PROPERTY,
+    THREAD_BOTS_KEY, THREAD_CONNECTORS_KEY,
     POST_EVERYONE, POST_EXCEPT_GUESTS, POST_MODERATORS,
     REPLY_AUTHOR_MODERATORS, REPLY_EVERYONE,
 };
