@@ -843,6 +843,20 @@ pub async fn create_team_via_middle_tier(
     })
 }
 
+/// Create one standard (private) team and print its id, name and channels
+/// as `key: value` lines (no tokens). Thin print wrapper over
+/// [`create_team_via_middle_tier`].
+pub async fn create_team(name: &str, description: Option<&str>) -> Result<()> {
+    let client = TeamsClient::new().await?;
+    let created = create_team_via_middle_tier(&client, name, description).await?;
+    println!("team_id: {}", created.team.id);
+    println!("team_name: {}", created.team.name);
+    for ch in &created.team.channels {
+        println!("channel: {} {}", ch.name, ch.id);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod mt_create_tests {
     use super::*;

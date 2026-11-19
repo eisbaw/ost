@@ -97,6 +97,11 @@ pub async fn list_teams() -> Result<()> {
     teams::list_teams().await
 }
 
+/// Create one standard (private) team via the middle tier
+pub async fn create_team(name: &str, description: Option<&str>) -> Result<()> {
+    teams::create_team(name, description).await
+}
+
 /// List one team's roster (members + owners; `owners_only` filters)
 pub async fn list_team_members(team_id: &str, owners_only: bool) -> Result<()> {
     teams::list_team_members(team_id, owners_only).await

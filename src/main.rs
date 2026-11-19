@@ -114,6 +114,17 @@ enum Commands {
     /// List joined teams and their channels
     Teams,
 
+    /// Create a team (private standard) via the Teams middle tier
+    TeamsCreate {
+        /// Team display name
+        #[arg(long)]
+        name: String,
+
+        /// Team description (blank when omitted)
+        #[arg(long)]
+        description: Option<String>,
+    },
+
     /// Team roster (Graph /teams/{id}/members).
     /// Bare: list members + owners. --owners: owners only.
     /// --add <user-id-or-upn> [--owner]: add. --remove <membership-id>: remove.
@@ -246,6 +257,10 @@ async fn main() -> Result<()> {
         }
         Commands::Teams => {
             api::list_teams().await?;
+        }
+        Commands::TeamsCreate { name, description } => {
+            tracing::info!("Creating team...");
+            api::create_team(&name, description.as_deref()).await?;
         }
         Commands::Members {
             team,
