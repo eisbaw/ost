@@ -32,6 +32,8 @@ struct Channel {
     membership_type: Option<String>,
     #[serde(rename = "webUrl")]
     web_url: Option<String>,
+    #[serde(rename = "isArchived")]
+    is_archived: Option<bool>,
 }
 
 /// List joined teams and channels (prints to stdout).
@@ -79,6 +81,8 @@ pub struct ChannelInfo {
     pub membership_type: Option<String>,
     /// Graph `webUrl` (open-in-browser deep link).
     pub web_url: Option<String>,
+    /// Graph `isArchived` (absent on old payloads).
+    pub is_archived: Option<bool>,
 }
 
 /// Graph path for creating a channel in one team (pure so tests pin it).
@@ -96,6 +100,63 @@ pub fn create_channel_body(name: &str, description: Option<&str>) -> serde_json:
         }
     }
     body
+}
+
+/// Normalize a channel membership type from UI/CLI input: blank means
+/// `standard` (the Graph default); otherwise `private` or `shared`
+/// (case-insensitive). Anything else is rejected before any network.
+pub fn normalize_membership_type(s: Option<&str>) -> Result<&'static str> {
+    match s.map(str::trim).unwrap_or("").to_ascii_lowercase().as_str() {
+        "" | "standard" => Ok("standard"),
+        "private" => Ok("private"),
+        "shared" => Ok("shared"),
+        _ => bail!("membership type must be standard, private or shared"),
+    }
+}
+
+/// One owner seed for a private/shared channel create: a user id or UPN.
+fn owner_bind(user: &str) -> serde_json::Value {
+    serde_json::json!({
+        "@odata.type": "#microsoft.graph.aadUserConversationMember",
+        "roles": ["owner"],
+        "user@odata.bind": format!(
+            "https://graph.microsoft.com/v1.0/users('{}')",
+            user.trim()
+        ),
+    })
+}
+
+/// POST body for a typed channel creation (Graph `POST
+/// /teams/{team-id}/channels`). Standard omits `membershipType` (the
+/// old body, unchanged). Private/shared carry `membershipType` plus a
+/// `members` array with at least one owner bind; shared allows exactly
+/// one initial owner (Graph 400s on more — rejected here instead).
+/// Pure so tests pin it.
+pub fn create_channel_body_typed(
+    name: &str,
+    description: Option<&str>,
+    membership_type: Option<&str>,
+    owners: &[&str],
+) -> Result<serde_json::Value> {
+    let membership = normalize_membership_type(membership_type)?;
+    let mut body = create_channel_body(name, description);
+    if membership == "standard" {
+        return Ok(body);
+    }
+    let clean: Vec<&str> = owners
+        .iter()
+        .map(|o| o.trim())
+        .filter(|o| !o.is_empty())
+        .collect();
+    if clean.is_empty() {
+        bail!("{} channels need at least one owner", membership);
+    }
+    if membership == "shared" && clean.len() > 1 {
+        bail!("shared channels take one initial owner; add the rest after creation");
+    }
+    body["membershipType"] = serde_json::Value::String(membership.to_string());
+    body["members"] = serde_json::Value::Array(clean.iter().map(|o| owner_bind(o)).collect());
+    Ok(body)
 }
 
 /// Reject ids that would break out of the Graph path segment.
@@ -120,6 +181,7 @@ fn channel_info(ch: Channel) -> ChannelInfo {
         description: ch.description,
         membership_type: ch.membership_type,
         web_url: ch.web_url,
+        is_archived: ch.is_archived,
     }
 }
 
@@ -200,12 +262,32 @@ pub async fn create_channel_data(
     name: &str,
     description: Option<&str>,
 ) -> Result<ChannelInfo> {
+    create_channel_typed_data(client, team_id, name, description, None, &[]).await
+}
+
+/// Create one channel of any membership type and return it.
+///
+/// Standard behaves exactly like [`create_channel_data`]. Private and
+/// shared need at least one owner (user id or UPN; the caller usually
+/// passes its own id); shared takes exactly one initial owner — Graph
+/// 400s on more, so extra owners are added after creation with
+/// [`add_channel_member_data`]. Permission notes: `Channel.Create`
+/// (delegated); archiving later needs `ChannelSettings.ReadWrite.All`,
+/// which the first-party Teams token may lack (the 403 surfaces).
+pub async fn create_channel_typed_data(
+    client: &TeamsClient,
+    team_id: &str,
+    name: &str,
+    description: Option<&str>,
+    membership_type: Option<&str>,
+    owners: &[&str],
+) -> Result<ChannelInfo> {
     check_id("team_id", team_id)?;
     if name.trim().is_empty() {
         bail!("empty name");
     }
     let path = create_channel_path(team_id);
-    let body = create_channel_body(name, description);
+    let body = create_channel_body_typed(name, description, membership_type, owners)?;
     let resp = client.graph_post(&path, &body).await?;
     let channel: Channel = resp
         .json()
@@ -406,6 +488,226 @@ pub async fn remove_team_member_data(
 }
 
 // ---------------------------------------------------------------------------
+// Channel members (private/shared channels only)
+// ---------------------------------------------------------------------------
+//
+// Graph `/teams/{id}/channels/{id}/members`: allowed ONLY on channels
+// whose `membershipType` is `private` or `shared` (standard channels
+// share the team roster — use the team `members` calls for those).
+// Roles are `owner` or empty (Graph takes no `"member"` role here).
+
+#[derive(Debug, Deserialize)]
+struct ChannelMembersResponse {
+    value: Vec<ChannelMember>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChannelMember {
+    id: String,
+    #[serde(rename = "displayName")]
+    display_name: Option<String>,
+    #[serde(rename = "userId")]
+    user_id: Option<String>,
+    email: Option<String>,
+    #[serde(default)]
+    roles: Vec<String>,
+}
+
+/// One private/shared channel membership. `id` is the membership id
+/// (the DELETE target), not the user id. Roles hold `"owner"` for
+/// owners and are empty for plain members.
+pub struct ChannelMemberInfo {
+    pub id: String,
+    pub display_name: String,
+    pub user_id: Option<String>,
+    pub email: Option<String>,
+    pub roles: Vec<String>,
+    pub is_owner: bool,
+}
+
+/// `GET/POST /teams/{team}/channels/{channel}/members` path.
+/// Pure so tests pin it.
+pub fn channel_members_path(team_id: &str, channel_id: &str) -> String {
+    format!(
+        "/teams/{}/channels/{}/members",
+        team_id.trim(),
+        channel_id.trim()
+    )
+}
+
+/// `DELETE /teams/{team}/channels/{channel}/members/{member}` path.
+/// Pure so tests pin it.
+pub fn channel_member_path(team_id: &str, channel_id: &str, member_id: &str) -> String {
+    format!(
+        "/teams/{}/channels/{}/members/{}",
+        team_id.trim(),
+        channel_id.trim(),
+        member_id.trim()
+    )
+}
+
+/// `POST .../members` body: `user` is a user id or UPN. `owner` adds
+/// the `"owner"` role; members carry an EMPTY roles array (Graph
+/// rejects `"member"` here). Pure so tests pin it.
+pub fn add_channel_member_body(user: &str, owner: bool) -> serde_json::Value {
+    let roles: Vec<&str> = if owner { vec!["owner"] } else { vec![] };
+    serde_json::json!({
+        "@odata.type": "#microsoft.graph.aadUserConversationMember",
+        "roles": roles,
+        "user@odata.bind": format!(
+            "https://graph.microsoft.com/v1.0/users('{}')",
+            user.trim()
+        ),
+    })
+}
+
+fn channel_member_info(m: ChannelMember) -> ChannelMemberInfo {
+    let is_owner = m.roles.iter().any(|r| r == "owner");
+    ChannelMemberInfo {
+        display_name: m.display_name.unwrap_or_else(|| m.id.clone()),
+        id: m.id,
+        user_id: m.user_id,
+        email: m.email,
+        roles: m.roles,
+        is_owner,
+    }
+}
+
+/// List one private/shared channel's members. Standard channels 400
+/// on this path (they share the team roster) — the refusal surfaces.
+pub async fn list_channel_members_data(
+    client: &TeamsClient,
+    team_id: &str,
+    channel_id: &str,
+) -> Result<Vec<ChannelMemberInfo>> {
+    check_id("team_id", team_id)?;
+    check_id("channel_id", channel_id)?;
+    let resp = client
+        .graph_get(&channel_members_path(team_id, channel_id))
+        .await?;
+    let members: ChannelMembersResponse = resp
+        .json()
+        .await
+        .context("Failed to parse channel members response")?;
+    Ok(members.value.into_iter().map(channel_member_info).collect())
+}
+
+/// Add one user to a private/shared channel (`owner` grants the owner
+/// role) and return the created membership.
+pub async fn add_channel_member_data(
+    client: &TeamsClient,
+    team_id: &str,
+    channel_id: &str,
+    user: &str,
+    owner: bool,
+) -> Result<ChannelMemberInfo> {
+    check_id("team_id", team_id)?;
+    check_id("channel_id", channel_id)?;
+    if user.trim().is_empty() {
+        bail!("empty user");
+    }
+    let resp = client
+        .graph_post(
+            &channel_members_path(team_id, channel_id),
+            &add_channel_member_body(user, owner),
+        )
+        .await?;
+    let member: ChannelMember = resp
+        .json()
+        .await
+        .context("Failed to parse added channel member response")?;
+    Ok(channel_member_info(member))
+}
+
+/// Remove one membership from a private/shared channel. `member_id`
+/// is the membership id from the roster, not the user id.
+pub async fn remove_channel_member_data(
+    client: &TeamsClient,
+    team_id: &str,
+    channel_id: &str,
+    member_id: &str,
+) -> Result<()> {
+    check_id("team_id", team_id)?;
+    check_id("channel_id", channel_id)?;
+    check_id("member_id", member_id)?;
+    client
+        .graph_delete(&channel_member_path(team_id, channel_id, member_id))
+        .await?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Channel archive / unarchive
+// ---------------------------------------------------------------------------
+//
+// Graph `POST /teams/{id}/channels/{id}/archive` (async: the 202
+// response returns before the channel flips) and `POST .../unarchive`.
+// Needs `ChannelSettings.ReadWrite.All`; a 403 surfaces as the call's
+// detail. Guard rails: no archived team (service refuses), and a
+// channel without an owner can't be archived (service refuses).
+
+/// `POST .../archive` path. Pure so tests pin it.
+pub fn archive_channel_path(team_id: &str, channel_id: &str) -> String {
+    format!(
+        "/teams/{}/channels/{}/archive",
+        team_id.trim(),
+        channel_id.trim()
+    )
+}
+
+/// `POST .../unarchive` path. Pure so tests pin it.
+pub fn unarchive_channel_path(team_id: &str, channel_id: &str) -> String {
+    format!(
+        "/teams/{}/channels/{}/unarchive",
+        team_id.trim(),
+        channel_id.trim()
+    )
+}
+
+/// `POST .../archive` body: `shouldSetSpoSiteReadOnlyForMembers`
+/// only when set (Graph defaults it). Pure so tests pin it.
+pub fn archive_channel_body(should_set_spo_read_only: Option<bool>) -> serde_json::Value {
+    match should_set_spo_read_only {
+        Some(v) => serde_json::json!({ "shouldSetSpoSiteReadOnlyForMembers": v }),
+        None => serde_json::json!({}),
+    }
+}
+
+/// Archive one channel (async — the channel flips after the call
+/// returns). Callers re-read the channel (`isArchived`) to confirm.
+pub async fn archive_channel_data(
+    client: &TeamsClient,
+    team_id: &str,
+    channel_id: &str,
+    should_set_spo_read_only: Option<bool>,
+) -> Result<()> {
+    check_id("team_id", team_id)?;
+    check_id("channel_id", channel_id)?;
+    client
+        .graph_post(
+            &archive_channel_path(team_id, channel_id),
+            &archive_channel_body(should_set_spo_read_only),
+        )
+        .await?;
+    Ok(())
+}
+
+/// Restore one archived channel. A channel in an archived team can't
+/// be unarchived (unarchive the team first) — the refusal surfaces.
+pub async fn unarchive_channel_data(
+    client: &TeamsClient,
+    team_id: &str,
+    channel_id: &str,
+) -> Result<()> {
+    check_id("team_id", team_id)?;
+    check_id("channel_id", channel_id)?;
+    client
+        .graph_post(&unarchive_channel_path(team_id, channel_id), &serde_json::json!({}))
+        .await?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Channel message reactions (om-je-parity)
 // ---------------------------------------------------------------------------
 // Graph setReaction/unsetReaction on channel messages — the channel
@@ -537,6 +839,111 @@ pub async fn unset_channel_reaction_data(
         None => channel_unset_reaction_path(team_id, channel_id, message_id),
     };
     client.graph_post(&path, &channel_react_body(emoji)).await?;
+    Ok(())
+}
+
+/// Create one channel of any membership type (prints to stdout).
+/// `owners` holds user ids or UPNs (required for private/shared —
+/// usually the caller's own id; shared takes exactly one).
+pub async fn create_channel_typed(
+    team_id: &str,
+    name: &str,
+    description: Option<&str>,
+    membership_type: Option<&str>,
+    owners: &[&str],
+) -> Result<()> {
+    let client = super::client::TeamsClient::new().await?;
+    let ch = create_channel_typed_data(&client, team_id, name, description, membership_type, owners)
+        .await?;
+    println!(
+        "Created {} channel '{}' ({})",
+        ch.membership_type.as_deref().unwrap_or("standard"),
+        ch.name,
+        ch.id
+    );
+    Ok(())
+}
+
+/// List one private/shared channel's members (prints to stdout).
+/// `owners_only` keeps owner-role entries; the header still names the
+/// full count. Standard channels share the team roster — use the
+/// `members` command for those.
+pub async fn list_channel_members(
+    team_id: &str,
+    channel_id: &str,
+    owners_only: bool,
+) -> Result<()> {
+    let client = super::client::TeamsClient::new().await?;
+    let members = list_channel_members_data(&client, team_id, channel_id).await?;
+    let shown: Vec<&ChannelMemberInfo> = if owners_only {
+        members.iter().filter(|m| m.is_owner).collect()
+    } else {
+        members.iter().collect()
+    };
+
+    println!(
+        "\nChannel {} members ({}{}):",
+        channel_id.trim(),
+        shown.len(),
+        if owners_only { " owners" } else { "" }
+    );
+    println!("{:-<60}", "");
+    if shown.is_empty() {
+        println!("  (none)");
+        return Ok(());
+    }
+    for m in shown {
+        let role = if m.is_owner { "owner" } else { "member" };
+        let mail = m.email.as_deref().unwrap_or("-");
+        println!("  {:<24} {:<7} {}  {}", m.display_name, role, m.id, mail);
+    }
+    Ok(())
+}
+
+/// Add one user to a private/shared channel (prints to stdout).
+pub async fn add_channel_member(
+    team_id: &str,
+    channel_id: &str,
+    user: &str,
+    owner: bool,
+) -> Result<()> {
+    let client = super::client::TeamsClient::new().await?;
+    let m = add_channel_member_data(&client, team_id, channel_id, user, owner).await?;
+    println!(
+        "Added {} as {} (membership {})",
+        m.display_name,
+        if m.is_owner { "owner" } else { "member" },
+        m.id
+    );
+    Ok(())
+}
+
+/// Remove one membership from a private/shared channel (prints to stdout).
+pub async fn remove_channel_member(team_id: &str, channel_id: &str, member_id: &str) -> Result<()> {
+    let client = super::client::TeamsClient::new().await?;
+    remove_channel_member_data(&client, team_id, channel_id, member_id).await?;
+    println!(
+        "Removed membership {} from channel {}",
+        member_id.trim(),
+        channel_id.trim()
+    );
+    Ok(())
+}
+
+/// Archive one channel (prints to stdout). Async server-side: re-read
+/// the channel (`isArchived`) to confirm the flip.
+pub async fn archive_channel(team_id: &str, channel_id: &str) -> Result<()> {
+    let client = super::client::TeamsClient::new().await?;
+    archive_channel_data(&client, team_id, channel_id, None).await?;
+    println!("Archived channel {}", channel_id.trim());
+    Ok(())
+}
+
+/// Restore one archived channel (prints to stdout).
+pub async fn unarchive_channel(team_id: &str, channel_id: &str) -> Result<()> {
+    let client = super::client::TeamsClient::new().await?;
+    unarchive_channel_data(&client, team_id, channel_id).await?;
+    println!("Unarchived channel {}", channel_id.trim());
     Ok(())
 }
 
@@ -1227,6 +1634,94 @@ mod tests {
     }
 
     #[test]
+    fn typed_create_body_pins_docs_shapes() {
+        assert_eq!(normalize_membership_type(None).unwrap(), "standard");
+        assert_eq!(normalize_membership_type(Some("  ")).unwrap(), "standard");
+        assert_eq!(
+            normalize_membership_type(Some("Private")).unwrap(),
+            "private"
+        );
+        assert_eq!(normalize_membership_type(Some("SHARED")).unwrap(), "shared");
+        assert!(normalize_membership_type(Some("secret")).is_err());
+
+        let standard =
+            create_channel_body_typed("Random", Some("d"), None, &[]).unwrap();
+        assert_eq!(
+            standard,
+            serde_json::json!({"displayName": "Random", "description": "d"})
+        );
+        assert!(standard.get("membershipType").is_none());
+
+        let private = create_channel_body_typed(
+            "Priv",
+            None,
+            Some("private"),
+            &["oid-1", " user@x.com "],
+        )
+        .unwrap();
+        assert_eq!(private["membershipType"], "private");
+        let members = private["members"].as_array().unwrap();
+        assert_eq!(members.len(), 2);
+        assert_eq!(members[0]["roles"], serde_json::json!(["owner"]));
+        assert_eq!(
+            members[1]["user@odata.bind"],
+            "https://graph.microsoft.com/v1.0/users('user@x.com')"
+        );
+
+        let shared =
+            create_channel_body_typed("Shr", None, Some("shared"), &["oid-1"]).unwrap();
+        assert_eq!(shared["membershipType"], "shared");
+        assert_eq!(shared["members"].as_array().unwrap().len(), 1);
+
+        assert!(create_channel_body_typed("P", None, Some("private"), &[]).is_err());
+        assert!(create_channel_body_typed("P", None, Some("private"), &["  "]).is_err());
+        assert!(create_channel_body_typed("S", None, Some("shared"), &["a", "b"]).is_err());
+        assert!(create_channel_body_typed("X", None, Some("secret"), &["a"]).is_err());
+    }
+
+    #[test]
+    fn channel_member_paths_and_body_pin_docs_shapes() {
+        assert_eq!(
+            channel_members_path(" t1 ", "19:ch@thread.tacv2"),
+            "/teams/t1/channels/19:ch@thread.tacv2/members"
+        );
+        assert_eq!(
+            channel_member_path("t1", "19:ch@thread.tacv2", "m9"),
+            "/teams/t1/channels/19:ch@thread.tacv2/members/m9"
+        );
+        let owner = add_channel_member_body(" user@x.com ", true);
+        assert_eq!(
+            owner["@odata.type"],
+            "#microsoft.graph.aadUserConversationMember"
+        );
+        assert_eq!(owner["roles"], serde_json::json!(["owner"]));
+        assert_eq!(
+            owner["user@odata.bind"],
+            "https://graph.microsoft.com/v1.0/users('user@x.com')"
+        );
+        // Plain members carry EMPTY roles (Graph rejects "member").
+        let member = add_channel_member_body("oid-2", false);
+        assert_eq!(member["roles"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn archive_paths_and_body_pin_docs_shapes() {
+        assert_eq!(
+            archive_channel_path("t1", "19:ch@thread.tacv2"),
+            "/teams/t1/channels/19:ch@thread.tacv2/archive"
+        );
+        assert_eq!(
+            unarchive_channel_path(" t1 ", "19:ch@thread.tacv2"),
+            "/teams/t1/channels/19:ch@thread.tacv2/unarchive"
+        );
+        assert_eq!(archive_channel_body(None), serde_json::json!({}));
+        assert_eq!(
+            archive_channel_body(Some(true)),
+            serde_json::json!({"shouldSetSpoSiteReadOnlyForMembers": true})
+        );
+    }
+
+    #[test]
     fn created_channel_parses_with_name_fallback() {
         let named: Channel = serde_json::from_str(
             r#"{"id":"19:new@thread.tacv2","displayName":"New room"}"#,
@@ -1238,6 +1733,21 @@ mod tests {
         let unnamed: Channel =
             serde_json::from_str(r#"{"id":"19:anon@thread.tacv2"}"#).unwrap();
         assert_eq!(channel_info(unnamed).name, "19:anon@thread.tacv2");
+    }
+
+    #[test]
+    fn archived_flag_parses_when_present() {
+        let archived: Channel = serde_json::from_str(
+            r#"{"id":"19:a@thread.tacv2","displayName":"Old","isArchived":true}"#,
+        )
+        .unwrap();
+        let info = channel_info(archived);
+        assert_eq!(info.is_archived, Some(true));
+        let live: Channel = serde_json::from_str(
+            r#"{"id":"19:b@thread.tacv2","displayName":"New"}"#,
+        )
+        .unwrap();
+        assert_eq!(channel_info(live).is_archived, None);
     }
 
     #[test]

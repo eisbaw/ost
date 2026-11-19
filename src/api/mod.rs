@@ -23,6 +23,7 @@ pub use me::UserInfo;
 pub use presence::PresenceInfo;
 pub use teams::TeamInfo;
 pub use teams::TeamMemberInfo;
+pub use teams::ChannelMemberInfo;
 
 // Re-export ChannelInfo for use in TUI sidebar (currently consumed
 // only through TeamInfo.channels, but kept public for future callers).
@@ -65,6 +66,13 @@ pub use filesearch::{
     search_people_data, FIND_MAX_LIMIT,
 };
 pub use teams::{channel_path, delete_channel_data, update_channel_body, update_channel_data};
+pub use teams::{
+    add_channel_member_body, add_channel_member_data, archive_channel_body,
+    archive_channel_data, archive_channel_path, channel_member_path, channel_members_path,
+    create_channel_body_typed, create_channel_typed_data, list_channel_members_data,
+    normalize_membership_type, remove_channel_member_data, unarchive_channel_data,
+    unarchive_channel_path,
+};
 
 /// List recent chats (native Teams API)
 pub async fn list_chats(limit: usize) -> Result<()> {
@@ -159,4 +167,53 @@ pub async fn add_team_member(team_id: &str, user: &str, owner: bool) -> Result<(
 /// Remove one membership from a team
 pub async fn remove_team_member(team_id: &str, member_id: &str) -> Result<()> {
     teams::remove_team_member(team_id, member_id).await
+}
+
+/// Create one channel of any membership type
+pub async fn create_channel_typed(
+    team_id: &str,
+    name: &str,
+    description: Option<&str>,
+    membership_type: Option<&str>,
+    owners: &[&str],
+) -> Result<()> {
+    teams::create_channel_typed(team_id, name, description, membership_type, owners).await
+}
+
+/// List one private/shared channel's members
+pub async fn list_channel_members(
+    team_id: &str,
+    channel_id: &str,
+    owners_only: bool,
+) -> Result<()> {
+    teams::list_channel_members(team_id, channel_id, owners_only).await
+}
+
+/// Add one user to a private/shared channel
+pub async fn add_channel_member(
+    team_id: &str,
+    channel_id: &str,
+    user: &str,
+    owner: bool,
+) -> Result<()> {
+    teams::add_channel_member(team_id, channel_id, user, owner).await
+}
+
+/// Remove one membership from a private/shared channel
+pub async fn remove_channel_member(
+    team_id: &str,
+    channel_id: &str,
+    member_id: &str,
+) -> Result<()> {
+    teams::remove_channel_member(team_id, channel_id, member_id).await
+}
+
+/// Archive one channel (async server-side; re-read to confirm)
+pub async fn archive_channel(team_id: &str, channel_id: &str) -> Result<()> {
+    teams::archive_channel(team_id, channel_id).await
+}
+
+/// Restore one archived channel
+pub async fn unarchive_channel(team_id: &str, channel_id: &str) -> Result<()> {
+    teams::unarchive_channel(team_id, channel_id).await
 }
