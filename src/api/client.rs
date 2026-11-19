@@ -112,6 +112,31 @@ impl TeamsClient {
         check_response(resp, &url).await
     }
 
+    /// PATCH request to Microsoft Graph API (Bearer [REDACTED] with Graph token).
+    /// Online-meeting capture toggles (allowRecording / allowTranscription /
+    /// recordAutomatically). Same helper as fix/team-lifecycle's `graph_patch`:
+    /// merging both keeps one copy.
+    pub async fn graph_patch(
+        &self,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> Result<reqwest::Response> {
+        let token = self.graph_token()?;
+        let url = format!("{}{}", GRAPH_BASE, path);
+        tracing::debug!("Graph PATCH {}", url);
+
+        let resp = self
+            .http
+            .patch(&url)
+            .bearer_auth(&token)
+            .json(body)
+            .send()
+            .await
+            .with_context(|| format!("Graph PATCH {} failed", url))?;
+
+        check_response(resp, &url).await
+    }
+
     /// GET request to Teams/Skype API (X-SkypeToken header).
     pub async fn teams_get(&self, url: &str) -> Result<reqwest::Response> {
         let token = self.skype_token()?;
