@@ -10,6 +10,7 @@ use crate::config::Config;
 const GRAPH_BASE: &str = "https://graph.microsoft.com/v1.0";
 const DEFAULT_CHAT_SERVICE: &str = "https://amer.ng.msg.teams.microsoft.com";
 const CHATSVCAGG: &str = "https://chatsvcagg.teams.microsoft.com";
+const DEFAULT_MIDDLE_TIER: &str = "https://teams.microsoft.com/api/mt/amer";
 
 /// Authenticated client that handles both Graph (AAD) and Teams (Skype) APIs.
 pub struct TeamsClient {
@@ -112,6 +113,41 @@ impl TeamsClient {
         check_response(resp, &url).await
     }
 
+    /// GET an absolute Graph URL with the Graph Bearer [REDACTED] (async
+    /// `Content-Location` operation polls hand back absolute URLs).
+    pub async fn graph_get_url(&self, url: &str) -> Result<reqwest::Response> {
+        let token = self.graph_token()?;
+        tracing::debug!("Graph GET {}", url);
+
+        let resp = self
+            .http
+            .get(url)
+            .bearer_auth(&token)
+            .send()
+            .await
+            .with_context(|| format!("Graph GET {} failed", url))?;
+
+        check_response(resp, url).await
+    }
+
+    /// DELETE request to Microsoft Graph API (Bearer [REDACTED] with Graph token).
+    /// OstMac (om-h5-members): team member removal.
+    pub async fn graph_delete(&self, path: &str) -> Result<reqwest::Response> {
+        let token = self.graph_token()?;
+        let url = format!("{}{}", GRAPH_BASE, path);
+        tracing::debug!("Graph DELETE {}", url);
+
+        let resp = self
+            .http
+            .delete(&url)
+            .bearer_auth(&token)
+            .send()
+            .await
+            .with_context(|| format!("Graph DELETE {} failed", url))?;
+
+        check_response(resp, &url).await
+    }
+
     /// GET request to Teams/Skype API (X-SkypeToken header).
     pub async fn teams_get(&self, url: &str) -> Result<reqwest::Response> {
         let token = self.skype_token()?;
@@ -146,6 +182,80 @@ impl TeamsClient {
             .await
             .with_context(|| format!("Teams POST {} failed", url))?;
 
+        check_response(resp, url).await
+    }
+
+    /// Apps-platform middle tier base (`region_gtms.middleTier`),
+    /// falling back to the default region.
+    pub fn middle_tier_url(&self) -> String {
+        self.config
+            .get_region_gtms()
+            .and_then(|v| v.get("middleTier").and_then(|s| s.as_str()).map(String::from))
+            .unwrap_or_else(|| DEFAULT_MIDDLE_TIER.to_string())
+    }
+
+    /// Middle-tier auth: the Teams AAD token as Bearer plus X-Skypetoken
+    /// (the shell's `mtAuthWithSkypeXTokenResource`).
+    fn mt_request(&self, req: reqwest::RequestBuilder) -> Result<reqwest::RequestBuilder> {
+        let aad = self
+            .config
+            .get_access_token()
+            .context("No AAD token. Run 'teams-cli login' first.")?;
+        if aad.is_expired() {
+            bail!("AAD token expired. Run 'teams-cli login'.");
+        }
+        Ok(req
+            .bearer_auth(&aad.token)
+            .header("X-Skypetoken", self.skype_token()?)
+            .header("x-ms-client-type", "desktop"))
+    }
+
+    /// GET against the apps-platform middle tier.
+    pub async fn mt_get(&self, url: &str) -> Result<reqwest::Response> {
+        tracing::debug!("MT GET {}", url);
+        let resp = self
+            .mt_request(self.http.get(url))?
+            .send()
+            .await
+            .with_context(|| format!("MT GET {} failed", url))?;
+        check_response(resp, url).await
+    }
+
+    /// POST (JSON) against the apps-platform middle tier (read-only
+    /// queries: entitlement views, batched definitions).
+    pub async fn mt_post(&self, url: &str, body: &serde_json::Value) -> Result<reqwest::Response> {
+        tracing::debug!("MT POST {}", url);
+        let resp = self
+            .mt_request(self.http.post(url))?
+            .json(body)
+            .send()
+            .await
+            .with_context(|| format!("MT POST {} failed", url))?;
+        check_response(resp, url).await
+    }
+
+    /// JSON write against the Teams middle tier with the Teams web
+    /// client's own request shape: any method, JSON body, optional
+    /// `x-ms-client-caller` header. For the writes the web client makes
+    /// on the middle tier (team create, channel edit/delete, app install).
+    pub async fn mt_send_json(
+        &self,
+        verb: &'static str,
+        url: &str,
+        body: &serde_json::Value,
+        caller: Option<&str>,
+    ) -> Result<reqwest::Response> {
+        let method = reqwest::Method::from_bytes(verb.as_bytes())
+            .with_context(|| format!("bad method {}", verb))?;
+        tracing::debug!("MT {} {}", verb, url);
+        let mut req = self.mt_request(self.http.request(method, url))?.json(body);
+        if let Some(c) = caller {
+            req = req.header("x-ms-client-caller", c);
+        }
+        let resp = req
+            .send()
+            .await
+            .with_context(|| format!("MT {} {} failed", verb, url))?;
         check_response(resp, url).await
     }
 
@@ -206,6 +316,46 @@ impl TeamsClient {
         check_response(resp, url).await
     }
 
+    /// Raw-bytes GET for inline chat media (om-richmedia). Microsoft media
+    /// hosts (see `media::needs_auth`) attach the Skype token; public hosts
+    /// fetch without auth so the token never leaks to third parties.
+    /// Rejects over-cap payloads (never truncated).
+    pub async fn media_get(&self, url: &str) -> Result<super::media::MediaBytes> {
+        let mut req = self.http.get(url);
+        if super::media::needs_auth(url) {
+            let token = self.skype_token()?;
+            req = req
+                .header("Authentication", format!("skypetoken={}", token))
+                .header("X-SkypeToken", &token);
+        }
+        tracing::debug!("Media GET {}", url);
+        let resp = req
+            .send()
+            .await
+            .with_context(|| format!("Media GET {} failed", url))?;
+        let resp = check_response(resp, url).await?;
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(String::from);
+        let bytes = resp
+            .bytes()
+            .await
+            .with_context(|| format!("Media GET {} body failed", url))?;
+        if bytes.len() > super::media::MAX_BYTES {
+            anyhow::bail!(
+                "Media {} exceeds {} bytes",
+                url,
+                super::media::MAX_BYTES
+            );
+        }
+        Ok(super::media::MediaBytes {
+            data: bytes.to_vec(),
+            content_type,
+        })
+    }
+
     /// POST using `Authentication: skypetoken=...` header (native chat API).
     pub async fn chat_post(
         &self,
@@ -223,6 +373,54 @@ impl TeamsClient {
             .send()
             .await
             .with_context(|| format!("Chat POST {} failed", url))?;
+
+        check_response(resp, url).await
+    }
+
+    /// PUT using `Authentication: skypetoken=...` header (native chat API).
+    /// OstMac (om-editdel): message edits PUT new content to the per-message URL.
+    pub async fn chat_put(
+        &self,
+        url: &str,
+        body: &serde_json::Value,
+    ) -> Result<reqwest::Response> {
+        let token = self.skype_token()?;
+        tracing::debug!("Chat PUT {}", url);
+
+        let resp = self
+            .http
+            .put(url)
+            .header("Authentication", format!("skypetoken={}", token))
+            .json(body)
+            .send()
+            .await
+            .with_context(|| format!("Chat PUT {} failed", url))?;
+
+        check_response(resp, url).await
+    }
+
+    /// DELETE using `Authentication: skypetoken=...` header (native chat
+    /// API). Optional JSON body, same auth as [`Self::chat_post`];
+    /// message deletes pass `None`.
+    pub async fn chat_delete(
+        &self,
+        url: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<reqwest::Response> {
+        let token = self.skype_token()?;
+        tracing::debug!("Chat DELETE {}", url);
+
+        let mut req = self
+            .http
+            .delete(url)
+            .header("Authentication", format!("skypetoken={}", token));
+        if let Some(b) = body {
+            req = req.json(b);
+        }
+        let resp = req
+            .send()
+            .await
+            .with_context(|| format!("Chat DELETE {} failed", url))?;
 
         check_response(resp, url).await
     }
