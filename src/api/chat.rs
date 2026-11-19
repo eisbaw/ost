@@ -582,16 +582,20 @@ pub fn apply_mentions(markdown: &str, mentions: &[WireMention]) -> (String, Vec<
     (out, matched)
 }
 
-/// Restore sentinels to `<at>` tags (ids and display text escaped —
-/// both are caller-supplied). Indices without sentinels are no-ops.
+/// Restore sentinels to official mention spans (`<span itemscope
+/// itemtype="…/Mention" itemid="N">…</span>` — ECHO-FIX M2: spans
+/// survive the write path, `<at>` tags are scrubbed). Display text is
+/// escaped (caller-supplied); the itemid is numeric, shared with the
+/// entity via [`mention_itemid`]. Indices without sentinels are no-ops.
 pub fn restore_mentions(html: &str, mentions: &[WireMention]) -> String {
     let mut out = html.to_string();
     for (i, m) in mentions.iter().enumerate() {
         out = out.replace(
             &mention_sentinel(i),
             &format!(
-                "<at id=\"{}\">{}</at>",
-                html_escape(&m.id),
+                "<span itemscope itemtype=\"{}\" itemid=\"{}\">{}</span>",
+                MENTION_TYPE_URI,
+                mention_itemid(m, i),
                 html_escape(&m.display)
             ),
         );
@@ -697,25 +701,29 @@ impl WireImportance {
     }
 }
 
-/// One broadcast mention for the send path (`@channel` / `@team` /
-/// `@everyone`): the literal token as typed plus the observed wire
-/// identity (`<at id="0">…</at>` — the broadcast id fixtures carry;
-/// person mentions need member MRIs the composer cannot mint, so they
-/// stay plain text and never appear here).
+/// One mention entity for the send path (broadcast `@channel` / `@team` /
+/// `@everyone`, or a person mention when the caller knows the member
+/// MRI): the literal token as typed, the wire identity (numeric itemid;
+/// unparseable ids fall back to the positional index), the display text,
+/// the `mentionType` (`channel` / `team` / `everyone` / `person`), and
+/// the entity `mri` (user `8:…` / tag id / channel thread id; empty when
+/// the caller has none — the key is then omitted).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WireMention {
     pub token: String,
     pub id: String,
     pub display: String,
     pub kind: String,
+    pub mri: String,
 }
 
 /// Max broadcast mentions honored per send (hostile-input cap, mirrors
 /// [`WIRE_FENCE_MAX_BLOCKS`); extras are dropped, never fail.
 pub const WIRE_MENTION_MAX: usize = 20;
 
-/// Parse the Swift `mentions_json` (`[{token,id,display,kind}]`).
-/// Tolerant: bad JSON or bad rows yield no mentions, never a failure.
+/// Parse the Swift `mentions_json` (`[{token,id,display,kind,mri?}]`).
+/// Tolerant: bad JSON or bad rows yield no mentions, never a failure;
+/// a missing/blank `mri` parses to empty (the entity key is omitted).
 pub fn parse_wire_mentions(json: &str) -> Vec<WireMention> {
     let t = json.trim();
     if t.is_empty() {
@@ -732,6 +740,11 @@ pub fn parse_wire_mentions(json: &str) -> Vec<WireMention> {
             let id = o.get("id")?.as_str()?.trim();
             let display = o.get("display")?.as_str()?;
             let kind = o.get("kind")?.as_str()?.trim();
+            let mri = o
+                .get("mri")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
             if token.is_empty() || !token.starts_with('@') || id.is_empty() || kind.is_empty() {
                 return None;
             }
@@ -740,10 +753,60 @@ pub fn parse_wire_mentions(json: &str) -> Vec<WireMention> {
                 id: id.to_string(),
                 display: display.to_string(),
                 kind: kind.to_string(),
+                mri: mri.to_string(),
             })
         })
         .take(WIRE_MENTION_MAX)
         .collect()
+}
+
+/// Skype mention entity type URI (the official chatsvc write shape).
+pub const MENTION_TYPE_URI: &str = "http://schema.skype.com/Mention";
+
+/// Effective numeric itemid for one mention entity and its content tag
+/// (shared so the pair always agrees). Numeric ids pass through;
+/// anything else falls back to the positional index — hostile input
+/// never breaks the pair.
+fn mention_itemid(m: &WireMention, index: usize) -> u64 {
+    m.id.trim().parse::<u64>().unwrap_or(index as u64)
+}
+
+/// Mention entities in the official write shape: a JSON STRING of
+/// `[{@type, itemid:number, mri?, mentionType, displayName}]` (ECHO-FIX
+/// R1 live-proven: raw arrays are dropped at write, strings persist
+/// verbatim; `<at>` content tags are scrubbed, spans survive).
+fn mention_entities(mentions: &[WireMention]) -> String {
+    let ents: Vec<serde_json::Value> = mentions
+        .iter()
+        .enumerate()
+        .map(|(i, m)| {
+            let mut e = serde_json::Map::new();
+            e.insert(
+                "@type".to_string(),
+                serde_json::Value::String(MENTION_TYPE_URI.to_string()),
+            );
+            e.insert(
+                "itemid".to_string(),
+                serde_json::Value::from(mention_itemid(m, i)),
+            );
+            if !m.mri.trim().is_empty() {
+                e.insert(
+                    "mri".to_string(),
+                    serde_json::Value::String(m.mri.trim().to_string()),
+                );
+            }
+            e.insert(
+                "mentionType".to_string(),
+                serde_json::Value::String(m.kind.clone()),
+            );
+            e.insert(
+                "displayName".to_string(),
+                serde_json::Value::String(m.display.clone()),
+            );
+            serde_json::Value::Object(e)
+        })
+        .collect();
+    serde_json::Value::Array(ents).to_string()
 }
 
 /// Additive send options (COMPOSER-B). `none()` is the legacy request.
@@ -779,28 +842,34 @@ impl SendOpts {
     /// matched mentions — see [`send_message_body_opts`] — so a stale
     /// token list never notifies blind).
     fn apply_to_body(&self, body: &mut serde_json::Value) {
-        if let Some(v) = self.importance.wire_value() {
-            body["importance"] = serde_json::Value::String(v.to_string());
+        // ECHO-FIX (SKYPE-WRITE-SHAPE): the chatsvc write path reads
+        // importance/subject from UNDER `properties` — top-level cells
+        // are dropped at write. Any set opt emits the official
+        // always-present block (F1/S1/M2 live-proven shapes);
+        // `none()` stays the legacy body bit-identical (no key at all).
+        let subject = self.subject.as_ref().map(|s| s.trim()).unwrap_or("");
+        if self.importance.wire_value().is_none()
+            && subject.is_empty()
+            && self.mentions.is_empty()
+        {
+            return;
         }
-        if let Some(s) = self.subject.as_ref() {
-            if !s.trim().is_empty() {
-                body["subject"] = serde_json::Value::String(s.clone());
-            }
-        }
+        let mut props = serde_json::Map::new();
+        props.insert(
+            "importance".to_string(),
+            serde_json::Value::String(self.importance.wire_value().unwrap_or("").to_string()),
+        );
+        props.insert(
+            "subject".to_string(),
+            serde_json::Value::String(subject.to_string()),
+        );
         if !self.mentions.is_empty() {
-            let ms: Vec<serde_json::Value> = self
-                .mentions
-                .iter()
-                .map(|m| {
-                    serde_json::json!({
-                        "itemid": m.id,
-                        "mentionType": m.kind,
-                        "displayName": m.display,
-                    })
-                })
-                .collect();
-            body["properties"] = serde_json::json!({ "mentions": ms });
+            props.insert(
+                "mentions".to_string(),
+                serde_json::Value::String(mention_entities(&self.mentions)),
+            );
         }
+        body["properties"] = serde_json::Value::Object(props);
     }
 }
 
@@ -1194,6 +1263,7 @@ mod tests {
             id: "0".to_string(),
             display: "channel".to_string(),
             kind: "channel".to_string(),
+            mri: "19:TESTCHAN@thread.tacv2".to_string(),
         }
     }
 
@@ -1214,7 +1284,7 @@ mod tests {
         assert_eq!(hit, vec![true]);
         assert_eq!(
             restore_mentions(&t, &m),
-            "hey <at id=\"0\">channel</at> look"
+            "hey <span itemscope itemtype=\"http://schema.skype.com/Mention\" itemid=\"0\">channel</span> look"
         );
         // Case-insensitive, all occurrences (two substitutions).
         let (t, hit) = apply_mentions("@Channel and @CHANNEL", &m);
@@ -1222,7 +1292,7 @@ mod tests {
         assert_eq!(t.matches(&mention_sentinel(0)).count(), 2);
         assert_eq!(
             restore_mentions(&t, &m),
-            "<at id=\"0\">channel</at> and <at id=\"0\">channel</at>"
+            "<span itemscope itemtype=\"http://schema.skype.com/Mention\" itemid=\"0\">channel</span> and <span itemscope itemtype=\"http://schema.skype.com/Mention\" itemid=\"0\">channel</span>"
         );
         // Glued tokens never tag (`!` splits, but the `a` prefix blocks).
         for fixed in ["x@channel", "@channelx", "@channel_x", "a@channel!b@c", "mail@channel.com"] {
@@ -1245,6 +1315,8 @@ mod tests {
 
     // COMPOSER-B: bodies carry importance/subject/entities only when set;
     // `none()` is the legacy body bit-identical.
+    // ECHO-FIX: set opts emit the official always-present `properties`
+    // block (top-level cells are dropped at write — SKYPE-WRITE-SHAPE).
     #[test]
     fn composer_b_body_opts_keys() {
         let legacy = send_message_body("hey @channel");
@@ -1254,6 +1326,7 @@ mod tests {
         assert!(legacy.get("subject").is_none());
         assert!(legacy.get("properties").is_none());
 
+        // F1 shape: importance under properties, subject always present.
         let important = send_message_body_opts(
             "hey",
             &SendOpts {
@@ -1261,9 +1334,11 @@ mod tests {
                 ..SendOpts::none()
             },
         );
-        assert_eq!(important["importance"], "high");
-        assert!(important.get("subject").is_none());
+        assert!(important.get("importance").is_none());
+        assert_eq!(important["properties"]["importance"], "high");
+        assert_eq!(important["properties"]["subject"], "");
 
+        // S1 shape: filled subject, empty importance.
         let urgent_subject = send_message_body_opts(
             "hey",
             &SendOpts {
@@ -1272,10 +1347,12 @@ mod tests {
                 ..SendOpts::none()
             },
         );
-        assert_eq!(urgent_subject["importance"], "urgent");
-        assert_eq!(urgent_subject["subject"], "Weekly sync");
+        assert!(urgent_subject.get("importance").is_none());
+        assert!(urgent_subject.get("subject").is_none());
+        assert_eq!(urgent_subject["properties"]["importance"], "urgent");
+        assert_eq!(urgent_subject["properties"]["subject"], "Weekly sync");
 
-        // Blank subjects serialize to nothing.
+        // Blank subjects serialize to nothing (legacy body, no block).
         let blank = send_message_body_opts(
             "hey",
             &SendOpts {
@@ -1284,16 +1361,26 @@ mod tests {
             },
         );
         assert!(blank.get("subject").is_none());
+        assert!(blank.get("properties").is_none());
 
         // Entities cover only matched tokens (stale list → no blind notify).
         let full = send_message_body_opts("hey @channel", &composer_b_opts());
-        assert_eq!(full["content"], "<p>hey <at id=\"0\">channel</at></p>");
-        assert_eq!(full["properties"]["mentions"][0]["itemid"], "0");
-        assert_eq!(full["properties"]["mentions"][0]["mentionType"], "channel");
+        assert_eq!(
+            full["content"],
+            "<p>hey <span itemscope itemtype=\"http://schema.skype.com/Mention\" itemid=\"0\">channel</span></p>"
+        );
+        let ents: serde_json::Value =
+            serde_json::from_str(full["properties"]["mentions"].as_str().unwrap()).unwrap();
+        assert_eq!(ents[0]["@type"], "http://schema.skype.com/Mention");
+        assert_eq!(ents[0]["itemid"], 0);
+        assert_eq!(ents[0]["mri"], "19:TESTCHAN@thread.tacv2");
+        assert_eq!(ents[0]["mentionType"], "channel");
+        assert_eq!(ents[0]["displayName"], "channel");
         let stale = send_message_body_opts("hey all", &composer_b_opts());
         assert!(stale.get("properties").is_none());
 
-        // Display text and ids escape (caller-supplied).
+        // Display text escapes (caller-supplied); hostile ids fall back
+        // to the positional index, shared by tag and entity.
         let evil = send_message_body_opts(
             "hi @channel",
             &SendOpts {
@@ -1302,14 +1389,19 @@ mod tests {
                     id: "0\"><b>".to_string(),
                     display: "a<b>&".to_string(),
                     kind: "channel".to_string(),
+                    mri: "".to_string(),
                 }],
                 ..SendOpts::none()
             },
         );
         assert_eq!(
             evil["content"],
-            "<p>hi <at id=\"0&quot;&gt;&lt;b&gt;\">a&lt;b&gt;&amp;</at></p>"
+            "<p>hi <span itemscope itemtype=\"http://schema.skype.com/Mention\" itemid=\"0\">a&lt;b&gt;&amp;</span></p>"
         );
+        let evil_ents: serde_json::Value =
+            serde_json::from_str(evil["properties"]["mentions"].as_str().unwrap()).unwrap();
+        assert_eq!(evil_ents[0]["itemid"], 0);
+        assert!(evil_ents[0].get("mri").is_none());
         // No sentinel leaks into any body.
         for b in [&full, &stale, &evil, &legacy] {
             assert!(
@@ -1318,6 +1410,61 @@ mod tests {
                 b["content"]
             );
         }
+    }
+
+    // ECHO-FIX: M2 person-mention body — string entity (numeric itemid,
+    // @type, user mri) + span content, verbatim live-proven shapes.
+    #[test]
+    fn echofix_person_mention_body() {
+        let body = send_message_body_opts(
+            "hey @Jordan Fox",
+            &SendOpts {
+                mentions: vec![WireMention {
+                    token: "@Jordan Fox".to_string(),
+                    id: "0".to_string(),
+                    display: "Jordan Fox".to_string(),
+                    kind: "person".to_string(),
+                    mri: "8:orgid:11111111-2222-3333-4444-555555555555".to_string(),
+                }],
+                ..SendOpts::none()
+            },
+        );
+        assert_eq!(
+            body["content"],
+            "<p>hey <span itemscope itemtype=\"http://schema.skype.com/Mention\" itemid=\"0\">Jordan Fox</span></p>"
+        );
+        assert_eq!(body["properties"]["importance"], "");
+        assert_eq!(body["properties"]["subject"], "");
+        let ents: serde_json::Value =
+            serde_json::from_str(body["properties"]["mentions"].as_str().unwrap()).unwrap();
+        assert_eq!(ents.as_array().unwrap().len(), 1);
+        assert_eq!(ents[0]["itemid"], 0);
+        assert_eq!(ents[0]["mentionType"], "person");
+        assert_eq!(
+            ents[0]["mri"],
+            "8:orgid:11111111-2222-3333-4444-555555555555"
+        );
+    }
+
+    // ECHO-FIX: `mentions_json` carries the entity mri (tolerant: absent
+    // or blank parses to empty, never rejects the row).
+    #[test]
+    fn echofix_parse_wire_mri() {
+        let one = parse_wire_mentions(
+            r#"[{"token":"@channel","id":"0","display":"channel","kind":"channel","mri":"19:X@thread.tacv2"}]"#,
+        );
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0].mri, "19:X@thread.tacv2");
+        let legacy = parse_wire_mentions(
+            r#"[{"token":"@channel","id":"0","display":"channel","kind":"channel"}]"#,
+        );
+        assert_eq!(legacy.len(), 1);
+        assert_eq!(legacy[0].mri, "");
+        let blank = parse_wire_mentions(
+            r#"[{"token":"@channel","id":"0","display":"channel","kind":"channel","mri":"  "}]"#,
+        );
+        assert_eq!(blank.len(), 1);
+        assert_eq!(blank[0].mri, "");
     }
 
 }
