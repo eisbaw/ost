@@ -10,6 +10,7 @@ use crate::config::Config;
 const GRAPH_BASE: &str = "https://graph.microsoft.com/v1.0";
 const DEFAULT_CHAT_SERVICE: &str = "https://amer.ng.msg.teams.microsoft.com";
 const CHATSVCAGG: &str = "https://chatsvcagg.teams.microsoft.com";
+const DEFAULT_MIDDLE_TIER: &str = "https://teams.microsoft.com/api/mt/amer";
 
 /// Authenticated client that handles both Graph (AAD) and Teams (Skype) APIs.
 pub struct TeamsClient {
@@ -112,6 +113,45 @@ impl TeamsClient {
         check_response(resp, &url).await
     }
 
+    /// PATCH request to Microsoft Graph API (bearer auth with Graph token).
+    pub async fn graph_patch(
+        &self,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> Result<reqwest::Response> {
+        let token = self.graph_token()?;
+        let url = format!("{}{}", GRAPH_BASE, path);
+        tracing::debug!("Graph PATCH {}", url);
+
+        let resp = self
+            .http
+            .patch(&url)
+            .bearer_auth(&token)
+            .json(body)
+            .send()
+            .await
+            .with_context(|| format!("Graph PATCH {} failed", url))?;
+
+        check_response(resp, &url).await
+    }
+
+    /// DELETE request to Microsoft Graph API (bearer auth with Graph token).
+    pub async fn graph_delete(&self, path: &str) -> Result<reqwest::Response> {
+        let token = self.graph_token()?;
+        let url = format!("{}{}", GRAPH_BASE, path);
+        tracing::debug!("Graph DELETE {}", url);
+
+        let resp = self
+            .http
+            .delete(&url)
+            .bearer_auth(&token)
+            .send()
+            .await
+            .with_context(|| format!("Graph DELETE {} failed", url))?;
+
+        check_response(resp, &url).await
+    }
+
     /// GET request to Teams/Skype API (X-SkypeToken header).
     pub async fn teams_get(&self, url: &str) -> Result<reqwest::Response> {
         let token = self.skype_token()?;
@@ -146,6 +186,55 @@ impl TeamsClient {
             .await
             .with_context(|| format!("Teams POST {} failed", url))?;
 
+        check_response(resp, url).await
+    }
+
+    /// Apps-platform middle tier base (`region_gtms.middleTier`),
+    /// falling back to the default region.
+    pub fn middle_tier_url(&self) -> String {
+        self.config
+            .get_region_gtms()
+            .and_then(|v| v.get("middleTier").and_then(|s| s.as_str()).map(String::from))
+            .unwrap_or_else(|| DEFAULT_MIDDLE_TIER.to_string())
+    }
+
+    /// Middle-tier auth: the Teams AAD token as Bearer plus X-Skypetoken
+    /// (the shell's `mtAuthWithSkypeXTokenResource`).
+    fn mt_request(&self, req: reqwest::RequestBuilder) -> Result<reqwest::RequestBuilder> {
+        let aad = self
+            .config
+            .get_access_token()
+            .context("No AAD token. Run 'teams-cli login' first.")?;
+        if aad.is_expired() {
+            bail!("AAD token expired. Run 'teams-cli login'.");
+        }
+        Ok(req
+            .bearer_auth(&aad.token)
+            .header("X-Skypetoken", self.skype_token()?)
+            .header("x-ms-client-type", "desktop"))
+    }
+
+    /// GET against the apps-platform middle tier.
+    pub async fn mt_get(&self, url: &str) -> Result<reqwest::Response> {
+        tracing::debug!("MT GET {}", url);
+        let resp = self
+            .mt_request(self.http.get(url))?
+            .send()
+            .await
+            .with_context(|| format!("MT GET {} failed", url))?;
+        check_response(resp, url).await
+    }
+
+    /// POST (JSON) against the apps-platform middle tier (read-only
+    /// queries: entitlement views, batched definitions).
+    pub async fn mt_post(&self, url: &str, body: &serde_json::Value) -> Result<reqwest::Response> {
+        tracing::debug!("MT POST {}", url);
+        let resp = self
+            .mt_request(self.http.post(url))?
+            .json(body)
+            .send()
+            .await
+            .with_context(|| format!("MT POST {} failed", url))?;
         check_response(resp, url).await
     }
 

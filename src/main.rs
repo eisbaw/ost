@@ -71,6 +71,70 @@ enum Commands {
     /// List joined teams and their channels
     Teams,
 
+    /// List a channel's pinned tabs (read-only)
+    Tabs {
+        /// Channel ID (from `teams` output)
+        channel_id: String,
+    },
+
+    /// Dump every joined channel's tabs (one auth, read-only)
+    TabsAll,
+
+    /// Add a channel tab (website tab by default; --app for Planner/Forms).
+    /// With --chat, adds to a chat instead (positional id is the chat id).
+    TabsAdd {
+        /// Channel id (from `teams` output), or chat id with --chat
+        target: String,
+
+        /// Tab display name
+        #[arg(long)]
+        name: String,
+
+        /// Tab page URL (website tabs; seeds content + website addresses)
+        #[arg(long)]
+        url: Option<String>,
+
+        /// Teams app id (default: built-in website app)
+        #[arg(long)]
+        app: Option<String>,
+
+        /// Target is a chat id, not a channel id
+        #[arg(long)]
+        chat: bool,
+    },
+
+    /// Rename a channel tab (configure). With --chat, a chat tab.
+    TabsRename {
+        /// Channel id (from `teams` output), or chat id with --chat
+        target: String,
+
+        /// Tab id (from `tabs` output)
+        #[arg(long)]
+        tab: String,
+
+        /// New display name
+        #[arg(long)]
+        name: String,
+
+        /// Target is a chat id, not a channel id
+        #[arg(long)]
+        chat: bool,
+    },
+
+    /// Remove a channel tab. With --chat, a chat tab.
+    TabsRemove {
+        /// Channel id (from `teams` output), or chat id with --chat
+        target: String,
+
+        /// Tab id (from `tabs` output)
+        #[arg(long)]
+        tab: String,
+
+        /// Target is a chat id, not a channel id
+        #[arg(long)]
+        chat: bool,
+    },
+
     /// Show current user info (verify auth works)
     Whoami,
 
@@ -178,6 +242,38 @@ async fn main() -> Result<()> {
         }
         Commands::Teams => {
             api::list_teams().await?;
+        }
+        Commands::Tabs { channel_id } => {
+            tracing::info!("Fetching channel tabs...");
+            api::list_tabs(&channel_id).await?;
+        }
+        Commands::TabsAll => {
+            tracing::info!("Fetching all channel tabs...");
+            api::list_tabs_all().await?;
+        }
+        Commands::TabsAdd { target, name, url, app, chat } => {
+            tracing::info!("Adding tab...");
+            if chat {
+                api::add_chat_tab(&target, &name, app.as_deref(), url.as_deref()).await?;
+            } else {
+                api::add_channel_tab(&target, &name, app.as_deref(), url.as_deref()).await?;
+            }
+        }
+        Commands::TabsRename { target, tab, name, chat } => {
+            tracing::info!("Renaming tab...");
+            if chat {
+                api::rename_chat_tab(&target, &tab, &name).await?;
+            } else {
+                api::rename_channel_tab(&target, &tab, &name).await?;
+            }
+        }
+        Commands::TabsRemove { target, tab, chat } => {
+            tracing::info!("Removing tab...");
+            if chat {
+                api::remove_chat_tab(&target, &tab).await?;
+            } else {
+                api::remove_channel_tab(&target, &tab).await?;
+            }
         }
         Commands::Whoami => {
             api::whoami().await?;

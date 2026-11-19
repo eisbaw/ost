@@ -27,6 +27,11 @@ struct Channel {
     id: String,
     #[serde(rename = "displayName")]
     display_name: Option<String>,
+    description: Option<String>,
+    #[serde(rename = "membershipType")]
+    membership_type: Option<String>,
+    #[serde(rename = "webUrl")]
+    web_url: Option<String>,
 }
 
 /// List joined teams and channels (prints to stdout).
@@ -68,6 +73,12 @@ pub struct TeamInfo {
 pub struct ChannelInfo {
     pub id: String,
     pub name: String,
+    /// Graph `description` (absent on old/unset channels).
+    pub description: Option<String>,
+    /// Graph `membershipType` (`standard`/`private`/`shared`).
+    pub membership_type: Option<String>,
+    /// Graph `webUrl` (open-in-browser deep link).
+    pub web_url: Option<String>,
 }
 
 /// List joined teams with their channels and return structured data.
@@ -98,6 +109,9 @@ pub async fn list_teams_data(client: &TeamsClient) -> Result<Vec<TeamInfo>> {
                     .map(|ch| ChannelInfo {
                         name: ch.display_name.unwrap_or_else(|| ch.id.clone()),
                         id: ch.id,
+                        description: ch.description,
+                        membership_type: ch.membership_type,
+                        web_url: ch.web_url,
                     })
                     .collect()
             }
