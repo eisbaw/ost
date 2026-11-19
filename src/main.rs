@@ -84,6 +84,18 @@ enum Commands {
         set: Option<String>,
     },
 
+    /// Upcoming Teams meetings (Graph calendarView, next 7 days).
+    /// --parse <url-or-id> classifies a join string without network.
+    Meetings {
+        /// Maximum meetings to show
+        #[arg(short, long, default_value = "20")]
+        limit: usize,
+
+        /// Classify a pasted join link / thread id (no network)
+        #[arg(long)]
+        parse: Option<String>,
+    },
+
     /// Place a test call to yourself (self-call)
     CallTest {
         /// Duration in seconds to keep the call active
@@ -227,6 +239,21 @@ async fn main() -> Result<()> {
                 api::get_presence().await?;
             }
         },
+        Commands::Meetings { limit, parse } => {
+            if let Some(raw) = parse {
+                let t = api::parse_join_url(&raw);
+                println!("kind: {}", t.kind);
+                if let Some(tid) = t.thread_id {
+                    println!("thread: {}", tid);
+                }
+                if let Some(mid) = t.meeting_id {
+                    println!("meeting: {}", mid);
+                }
+                println!("url: {}", t.url);
+            } else {
+                api::list_upcoming_meetings(limit).await?;
+            }
+        }
         // TUI is handled above with early return.
         Commands::Tui => unreachable!(),
     }

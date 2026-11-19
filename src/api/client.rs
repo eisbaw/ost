@@ -112,6 +112,48 @@ impl TeamsClient {
         check_response(resp, &url).await
     }
 
+    /// PATCH request to Microsoft Graph API (bearer auth with Graph token).
+    /// Needed by the Shifts write ops (`update_shift_data`); mirrors the
+    /// generic `graph_patch` other stacks carry (dedupes with those when
+    /// the stacks land).
+    pub async fn graph_patch(
+        &self,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> Result<reqwest::Response> {
+        let token = self.graph_token()?;
+        let url = format!("{}{}", GRAPH_BASE, path);
+        tracing::debug!("Graph PATCH {}", url);
+
+        let resp = self
+            .http
+            .patch(&url)
+            .bearer_auth(&token)
+            .json(body)
+            .send()
+            .await
+            .with_context(|| format!("Graph PATCH {} failed", url))?;
+
+        check_response(resp, &url).await
+    }
+
+    /// DELETE request to Microsoft Graph API (Bearer [REDACTED] with Graph token).
+    pub async fn graph_delete(&self, path: &str) -> Result<reqwest::Response> {
+        let token = self.graph_token()?;
+        let url = format!("{}{}", GRAPH_BASE, path);
+        tracing::debug!("Graph DELETE {}", url);
+
+        let resp = self
+            .http
+            .delete(&url)
+            .bearer_auth(&token)
+            .send()
+            .await
+            .with_context(|| format!("Graph DELETE {} failed", url))?;
+
+        check_response(resp, &url).await
+    }
+
     /// GET request to Teams/Skype API (X-SkypeToken header).
     pub async fn teams_get(&self, url: &str) -> Result<reqwest::Response> {
         let token = self.skype_token()?;
