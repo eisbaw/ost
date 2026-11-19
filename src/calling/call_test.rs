@@ -295,6 +295,7 @@ pub async fn run_call_test(
         message_id: &message_id,
         caller_oid,
         tenant_id,
+        meeting: None,
     };
 
     // Place the call: 1:1 calls (echo or thread) use single-shot epconv, channel uses two-phase
