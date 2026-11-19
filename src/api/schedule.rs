@@ -255,6 +255,384 @@ pub async fn list_timeoff_reasons_data(
     Ok(parsed.value.into_iter().map(reason_from_wire).collect())
 }
 
+// -- Write ops: change requests, shifts, time off, publish --
+//
+// Every write below needs the delegated `Schedule.ReadWrite.All` scope
+// (Graph v1.0; the create calls also accept `Group.ReadWrite.All`).
+// The reads above need only directory-read scopes,
+// so on a tenant without the write scope each call fails with HTTP 403
+// `Missing scope permissions` naming the required scope — never silently.
+// All args are validated pre-network like the reads (`checked_team_id`,
+// `checked_datetime`); Graph ids travel as path segments verbatim.
+//
+// Kinds: `swap` (swapShiftsChangeRequests), `offer`
+// (offerShiftRequests), `timeoff` (timeOffRequests). Only these three
+// request sets exist in v1.0 (no open-shift requests: out of scope).
+
+/// One schedule change request (lenient: each set carries its own
+/// fields; only `id`/`state` are universal).
+pub struct ChangeRequestInfo {
+    pub id: String,
+    pub state: Option<String>,
+    pub sender_shift_id: Option<String>,
+    pub receiver_user_id: Option<String>,
+    pub reason_id: Option<String>,
+    pub start: Option<String>,
+    pub end: Option<String>,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WireChangeRequest {
+    id: String,
+    state: Option<String>,
+    #[serde(rename = "senderShiftId")]
+    sender_shift_id: Option<String>,
+    #[serde(rename = "receiverUserId")]
+    receiver_user_id: Option<String>,
+    #[serde(rename = "timeOffReasonId")]
+    reason_id: Option<String>,
+    #[serde(rename = "startDateTime")]
+    start: Option<String>,
+    #[serde(rename = "endDateTime")]
+    end: Option<String>,
+    message: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChangeRequestsResponse {
+    value: Vec<WireChangeRequest>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreatedResponse {
+    id: Option<String>,
+}
+
+fn request_from_wire(w: WireChangeRequest) -> ChangeRequestInfo {
+    ChangeRequestInfo {
+        id: w.id,
+        state: w.state,
+        sender_shift_id: w.sender_shift_id,
+        receiver_user_id: w.receiver_user_id,
+        reason_id: w.reason_id,
+        start: w.start,
+        end: w.end,
+        message: w.message,
+    }
+}
+
+/// Request-set collection for a kind (`swap`/`offer`/`timeoff`).
+/// Unknown kinds bail pre-network.
+pub fn request_collection(kind: &str) -> Result<&'static str> {
+    match kind.trim() {
+        "swap" => Ok("swapShiftsChangeRequests"),
+        "offer" => Ok("offerShiftRequests"),
+        "timeoff" => Ok("timeOffRequests"),
+        other => bail!("unknown shift request kind '{}' (swap|offer|timeoff)", other),
+    }
+}
+
+fn requests_path(team_id: &str, kind: &str) -> Result<String> {
+    Ok(format!("/teams/{}/schedule/{}", checked_team_id(team_id)?, request_collection(kind)?))
+}
+
+fn decide_path(team_id: &str, kind: &str, request_id: &str, approve: bool) -> Result<String> {
+    let id = request_id.trim();
+    if id.is_empty() {
+        bail!("empty request_id");
+    }
+    Ok(format!(
+        "{}/{}/{}",
+        requests_path(team_id, kind)?,
+        id,
+        if approve { "approve" } else { "decline" }
+    ))
+}
+
+/// True when a Graph failure is the missing-scope refusal (the error
+/// body names the required scope, e.g. `Schedule.ReadWrite.All`). The
+/// host maps this to the scope-pending empty state instead of raw JSON.
+pub fn is_missing_scope(text: &str) -> bool {
+    text.contains("Missing scope permissions")
+}
+
+fn created_id(bytes: &[u8], what: &str) -> Result<String> {
+    let parsed: CreatedResponse =
+        serde_json::from_slice(bytes).with_context(|| format!("Failed to parse created {} response", what))?;
+    parsed.id.filter(|s| !s.trim().is_empty()).context(format!("Created {} response has no id", what))
+}
+
+/// List one team's change requests of one kind (no state filter:
+/// teams are small; the host shows pending first). Empty `team_id` or
+/// unknown `kind` bail pre-network.
+pub async fn list_change_requests_data(
+    client: &TeamsClient,
+    team_id: &str,
+    kind: &str,
+) -> Result<Vec<ChangeRequestInfo>> {
+    let path = requests_path(team_id, kind)?;
+    let resp = client.graph_get(&path).await?;
+    let parsed: ChangeRequestsResponse = resp
+        .json()
+        .await
+        .with_context(|| format!("Failed to parse {} requests response", kind.trim()))?;
+    Ok(parsed.value.into_iter().map(request_from_wire).collect())
+}
+
+/// Create a swap request for one shift. `receiver_user_id`/`message`
+/// are optional (omitted when blank). Returns the request id.
+pub async fn create_swap_request_data(
+    client: &TeamsClient,
+    team_id: &str,
+    sender_shift_id: &str,
+    receiver_user_id: Option<&str>,
+    message: Option<&str>,
+) -> Result<String> {
+    let sender = sender_shift_id.trim();
+    if sender.is_empty() {
+        bail!("empty sender_shift_id");
+    }
+    let mut body = serde_json::json!({ "senderShiftId": sender });
+    if let Some(r) = receiver_user_id.filter(|s| !s.trim().is_empty()) {
+        body["receiverUserId"] = serde_json::json!(r.trim());
+    }
+    if let Some(m) = message.filter(|s| !s.trim().is_empty()) {
+        body["message"] = serde_json::json!(m.trim());
+    }
+    let path = requests_path(team_id, "swap")?;
+    let resp = client.graph_post(&path, &body).await?;
+    let bytes = resp.bytes().await.context("Failed to read created swap request body")?;
+    created_id(&bytes, "swap request")
+}
+
+/// Create an offer request (give one shift to one member). Returns the
+/// request id.
+pub async fn create_offer_request_data(
+    client: &TeamsClient,
+    team_id: &str,
+    sender_shift_id: &str,
+    receiver_user_id: Option<&str>,
+    message: Option<&str>,
+) -> Result<String> {
+    let sender = sender_shift_id.trim();
+    if sender.is_empty() {
+        bail!("empty sender_shift_id");
+    }
+    let mut body = serde_json::json!({ "senderShiftId": sender });
+    if let Some(r) = receiver_user_id.filter(|s| !s.trim().is_empty()) {
+        body["receiverUserId"] = serde_json::json!(r.trim());
+    }
+    if let Some(m) = message.filter(|s| !s.trim().is_empty()) {
+        body["message"] = serde_json::json!(m.trim());
+    }
+    let path = requests_path(team_id, "offer")?;
+    let resp = client.graph_post(&path, &body).await?;
+    let bytes = resp.bytes().await.context("Failed to read created offer request body")?;
+    created_id(&bytes, "offer request")
+}
+
+/// Create a time-off request for one reason and range. Returns the
+/// request id. Bounds are format-checked pre-network.
+pub async fn create_timeoff_request_data(
+    client: &TeamsClient,
+    team_id: &str,
+    reason_id: &str,
+    start: &str,
+    end: &str,
+    message: Option<&str>,
+) -> Result<String> {
+    let reason = reason_id.trim();
+    if reason.is_empty() {
+        bail!("empty reason_id");
+    }
+    let mut body = serde_json::json!({
+        "timeOffReasonId": reason,
+        "startDateTime": checked_datetime("start", start)?,
+        "endDateTime": checked_datetime("end", end)?,
+    });
+    if let Some(m) = message.filter(|s| !s.trim().is_empty()) {
+        body["message"] = serde_json::json!(m.trim());
+    }
+    let path = requests_path(team_id, "timeoff")?;
+    let resp = client.graph_post(&path, &body).await?;
+    let bytes = resp.bytes().await.context("Failed to read created time-off request body")?;
+    created_id(&bytes, "time-off request")
+}
+
+/// Approve or decline one change request (manager only server-side).
+/// `message` is sent when non-blank.
+pub async fn decide_change_request_data(
+    client: &TeamsClient,
+    team_id: &str,
+    kind: &str,
+    request_id: &str,
+    approve: bool,
+    message: Option<&str>,
+) -> Result<()> {
+    let path = decide_path(team_id, kind, request_id, approve)?;
+    let mut body = serde_json::json!({});
+    if let Some(m) = message.filter(|s| !s.trim().is_empty()) {
+        body["message"] = serde_json::json!(m.trim());
+    }
+    client.graph_post(&path, &body).await?;
+    Ok(())
+}
+
+fn draft_shift_slot(
+    start: &str,
+    end: &str,
+    display_name: Option<&str>,
+    theme: Option<&str>,
+    notes: Option<&str>,
+) -> Result<serde_json::Value> {
+    let mut slot = serde_json::json!({
+        "startDateTime": checked_datetime("start", start)?,
+        "endDateTime": checked_datetime("end", end)?,
+    });
+    if let Some(n) = display_name.filter(|s| !s.trim().is_empty()) {
+        slot["displayName"] = serde_json::json!(n.trim());
+    }
+    if let Some(t) = theme.filter(|s| !s.trim().is_empty()) {
+        slot["theme"] = serde_json::json!(t.trim().to_ascii_lowercase());
+    }
+    if let Some(n) = notes.filter(|s| !s.trim().is_empty()) {
+        slot["notes"] = serde_json::json!(n.trim());
+    }
+    Ok(slot)
+}
+
+/// Create one draft shift (manager only server-side). Blank `user_id`
+/// creates an open shift. Returns the shift id.
+pub async fn create_shift_data(
+    client: &TeamsClient,
+    team_id: &str,
+    user_id: &str,
+    start: &str,
+    end: &str,
+    display_name: Option<&str>,
+    theme: Option<&str>,
+    notes: Option<&str>,
+) -> Result<String> {
+    let mut body = serde_json::json!({
+        "draftShift": draft_shift_slot(start, end, display_name, theme, notes)?,
+    });
+    if !user_id.trim().is_empty() {
+        body["userId"] = serde_json::json!(user_id.trim());
+    }
+    let path = format!("/teams/{}/schedule/shifts", checked_team_id(team_id)?);
+    let resp = client.graph_post(&path, &body).await?;
+    let bytes = resp.bytes().await.context("Failed to read created shift body")?;
+    created_id(&bytes, "shift")
+}
+
+/// Patch one shift's draft slot (manager only server-side). Blank
+/// fields are left unchanged; at least one field is required.
+pub async fn update_shift_data(
+    client: &TeamsClient,
+    team_id: &str,
+    shift_id: &str,
+    start: Option<&str>,
+    end: Option<&str>,
+    display_name: Option<&str>,
+    theme: Option<&str>,
+    notes: Option<&str>,
+) -> Result<()> {
+    let id = shift_id.trim();
+    if id.is_empty() {
+        bail!("empty shift_id");
+    }
+    let present = [start, end, display_name, theme, notes]
+        .iter()
+        .any(|f| f.is_some_and(|s| !s.trim().is_empty()));
+    if !present {
+        bail!("nothing to update (all fields blank)");
+    }
+    let mut slot = serde_json::json!({});
+    if let Some(s) = start.filter(|s| !s.trim().is_empty()) {
+        slot["startDateTime"] = serde_json::json!(checked_datetime("start", s)?);
+    }
+    if let Some(e) = end.filter(|s| !s.trim().is_empty()) {
+        slot["endDateTime"] = serde_json::json!(checked_datetime("end", e)?);
+    }
+    if let Some(n) = display_name.filter(|s| !s.trim().is_empty()) {
+        slot["displayName"] = serde_json::json!(n.trim());
+    }
+    if let Some(t) = theme.filter(|s| !s.trim().is_empty()) {
+        slot["theme"] = serde_json::json!(t.trim().to_ascii_lowercase());
+    }
+    if let Some(n) = notes.filter(|s| !s.trim().is_empty()) {
+        slot["notes"] = serde_json::json!(n.trim());
+    }
+    let path = format!("/teams/{}/schedule/shifts/{}", checked_team_id(team_id)?, id);
+    client.graph_patch(&path, &serde_json::json!({ "draftShift": slot })).await?;
+    Ok(())
+}
+
+/// Delete one shift (manager only server-side).
+pub async fn delete_shift_data(client: &TeamsClient, team_id: &str, shift_id: &str) -> Result<()> {
+    let id = shift_id.trim();
+    if id.is_empty() {
+        bail!("empty shift_id");
+    }
+    let path = format!("/teams/{}/schedule/shifts/{}", checked_team_id(team_id)?, id);
+    client.graph_delete(&path).await?;
+    Ok(())
+}
+
+/// Create one draft time-off instance directly (manager only
+/// server-side; members use time-off requests). Returns the id.
+pub async fn create_timeoff_data(
+    client: &TeamsClient,
+    team_id: &str,
+    user_id: &str,
+    reason_id: &str,
+    start: &str,
+    end: &str,
+) -> Result<String> {
+    let user = user_id.trim();
+    if user.is_empty() {
+        bail!("empty user_id");
+    }
+    let reason = reason_id.trim();
+    if reason.is_empty() {
+        bail!("empty reason_id");
+    }
+    let body = serde_json::json!({
+        "userId": user,
+        "timeOffReasonId": reason,
+        "draftTimeOff": {
+            "startDateTime": checked_datetime("start", start)?,
+            "endDateTime": checked_datetime("end", end)?,
+        },
+    });
+    let path = format!("/teams/{}/schedule/timesOff", checked_team_id(team_id)?);
+    let resp = client.graph_post(&path, &body).await?;
+    let bytes = resp.bytes().await.context("Failed to read created time-off body")?;
+    created_id(&bytes, "time off")
+}
+
+/// Publish draft shifts/time off (`POST .../schedule/share`, manager
+/// only server-side). Blank bounds share the whole schedule.
+pub async fn share_schedule_data(
+    client: &TeamsClient,
+    team_id: &str,
+    notify_team: bool,
+    start: Option<&str>,
+    end: Option<&str>,
+) -> Result<()> {
+    let mut body = serde_json::json!({ "notifyTeam": notify_team });
+    if let Some(s) = start.filter(|s| !s.trim().is_empty()) {
+        body["startDateTime"] = serde_json::json!(checked_datetime("start", s)?);
+    }
+    if let Some(e) = end.filter(|s| !s.trim().is_empty()) {
+        body["endDateTime"] = serde_json::json!(checked_datetime("end", e)?);
+    }
+    let path = format!("/teams/{}/schedule/share", checked_team_id(team_id)?);
+    client.graph_post(&path, &body).await?;
+    Ok(())
+}
+
 // -- CLI entry point (prints to stdout) --
 
 // -- Date-range reads (server-side week) --
@@ -628,6 +1006,62 @@ mod tests {
         assert_eq!(reason_rows[0].name, "Vacation");
         // Missing displayName falls back to the reason id.
         assert_eq!(reason_rows[1].name, "r2");
+    }
+
+    #[test]
+    fn write_paths_and_validation_reject_pre_network() {
+        assert_eq!(
+            requests_path(" t1 ", "swap").unwrap(),
+            "/teams/t1/schedule/swapShiftsChangeRequests"
+        );
+        assert_eq!(
+            requests_path("t1", "offer").unwrap(),
+            "/teams/t1/schedule/offerShiftRequests"
+        );
+        assert_eq!(
+            requests_path("t1", "timeoff").unwrap(),
+            "/teams/t1/schedule/timeOffRequests"
+        );
+        assert!(requests_path("t1", "open").is_err());
+        assert!(requests_path("  ", "swap").is_err());
+        assert_eq!(
+            decide_path("t1", "swap", " r1 ", true).unwrap(),
+            "/teams/t1/schedule/swapShiftsChangeRequests/r1/approve"
+        );
+        assert_eq!(
+            decide_path("t1", "timeoff", "r1", false).unwrap(),
+            "/teams/t1/schedule/timeOffRequests/r1/decline"
+        );
+        assert!(decide_path("t1", "swap", "  ", true).is_err());
+        assert!(decide_path("t1", "bogus", "r1", true).is_err());
+        // Draft-slot body: blanks omitted, theme lowercased.
+        let slot = draft_shift_slot("2026-11-24T09:00:00Z", "2026-11-24T17:00:00Z",
+                                    Some(" Front "), Some("Blue"), Some("")).unwrap();
+        assert_eq!(slot["startDateTime"], "2026-11-24T09:00:00Z");
+        assert_eq!(slot["displayName"], "Front");
+        assert_eq!(slot["theme"], "blue");
+        assert!(slot.get("notes").is_none());
+        assert!(draft_shift_slot("junk", "2026-11-24T17:00:00Z", None, None, None).is_err());
+        // Missing-scope refusal is recognized for the scope-pending state.
+        assert!(is_missing_scope("HTTP 403 ... \"Missing scope permissions on the request. API requires one of 'Schedule.ReadWrite.All' ...\""));
+        assert!(!is_missing_scope("HTTP 404 ..."));
+        // Created id parsing: blank/missing ids fail loudly.
+        assert_eq!(created_id(br#"{"id":"abc"}"#, "shift").unwrap(), "abc");
+        assert!(created_id(br#"{"id":" "}"#, "shift").is_err());
+        assert!(created_id(br#"{}"#, "shift").is_err());
+        // Request rows parse leniently per set.
+        let reqs: ChangeRequestsResponse = serde_json::from_str(
+            r#"{"value":[
+                {"id":"q1","state":"pending","senderShiftId":"s1","message":"swap?"},
+                {"id":"q2","state":"approved","timeOffReasonId":"r1",
+                 "startDateTime":"2026-12-24T00:00:00","endDateTime":"2026-12-26T00:00:00"}]}"#,
+        )
+        .unwrap();
+        let rows: Vec<ChangeRequestInfo> = reqs.value.into_iter().map(request_from_wire).collect();
+        assert_eq!(rows[0].sender_shift_id.as_deref(), Some("s1"));
+        assert_eq!(rows[0].reason_id, None);
+        assert_eq!(rows[1].reason_id.as_deref(), Some("r1"));
+        assert_eq!(rows[1].state.as_deref(), Some("approved"));
     }
 
     #[test]
