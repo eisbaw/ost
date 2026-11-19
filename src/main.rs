@@ -147,6 +147,38 @@ enum Commands {
         #[arg(long)]
         set: Option<String>,
     },
+    /// Team lifecycle (team-admin): rename/re-describe, picture,
+    /// archive/restore, delete. At least one action flag is required;
+    /// --delete is irreversible (confirm first).
+    Team {
+        /// Team id (from `teams` output)
+        #[arg(long)]
+        team: String,
+
+        /// Rename the team (PATCH /groups/{id} displayName)
+        #[arg(long)]
+        rename: Option<String>,
+
+        /// Re-describe the team (PATCH /groups/{id} description)
+        #[arg(long)]
+        description: Option<String>,
+
+        /// Set the team picture from an image file (PUT photo/$value)
+        #[arg(long, value_name = "PATH")]
+        photo: Option<String>,
+
+        /// Archive the team (async server-side; re-list to confirm)
+        #[arg(long)]
+        archive: bool,
+
+        /// Restore an archived team
+        #[arg(long)]
+        unarchive: bool,
+
+        /// Delete the team (irreversible)
+        #[arg(long)]
+        delete: bool,
+    },
 
     /// List shared files in a chat or channel
     Files {
@@ -370,6 +402,53 @@ async fn main() -> Result<()> {
                 Some(other) => anyhow::bail!("--set must be 'private' or 'public' (got '{}')", other),
             }
         }
+        Commands::Team {
+            team,
+            rename,
+            description,
+            photo,
+            archive,
+            unarchive,
+            delete,
+        } => {
+            if archive && unarchive {
+                anyhow::bail!("--archive and --unarchive are exclusive");
+            }
+            if delete && (rename.is_some() || description.is_some() || photo.is_some() || archive || unarchive) {
+                anyhow::bail!("--delete is exclusive with all other team actions");
+            }
+            let mut acted = false;
+            if rename.is_some() || description.is_some() {
+                tracing::info!("Updating team...");
+                api::update_team(&team, rename.as_deref(), description.as_deref()).await?;
+                acted = true;
+            }
+            if let Some(path) = photo {
+                tracing::info!("Setting team photo...");
+                api::set_team_photo(&team, &path).await?;
+                acted = true;
+            }
+            if archive {
+                tracing::info!("Archiving team...");
+                api::archive_team(&team).await?;
+                acted = true;
+            }
+            if unarchive {
+                tracing::info!("Unarchiving team...");
+                api::unarchive_team(&team).await?;
+                acted = true;
+            }
+            if delete {
+                tracing::info!("Deleting team...");
+                api::delete_team(&team).await?;
+                acted = true;
+            }
+            if !acted {
+                anyhow::bail!("team: pass one of --rename/--description/--photo/--archive/--unarchive/--delete");
+            }
+        }
+
+
         Commands::Files { chat_id, limit } => {
             tracing::info!("Fetching shared files...");
             api::list_files(&chat_id, limit).await?;

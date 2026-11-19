@@ -1056,6 +1056,175 @@ pub async fn delete_channel_via_middle_tier(
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Team lifecycle (team-admin: edit name/desc, picture, archive/restore,
+// delete). A team IS its backing M365 group (same id): name/description
+// edits go `PATCH /groups/{id}` (same route as the visibility flip);
+// archive/restore go `POST /teams/{id}/archive|unarchive`; delete goes
+// `DELETE /teams/{id}`; picture goes `PUT /teams/{id}/photo/$value`.
+// All need owner-grade grants (Group.ReadWrite.All and friends) —
+// without them the server 403s and the refusal surfaces to the caller.
+// ---------------------------------------------------------------------------
+
+/// `PATCH /groups/{id}` path (team id = group id). Pure so tests pin it.
+pub fn update_team_path(team_id: &str) -> String {
+    format!("/groups/{}", team_id.trim())
+}
+
+/// `PATCH /groups/{id}` body: `displayName`/`description`, each only
+/// when set (blank names are dropped; a blank description clears to
+/// ""). Pure so tests pin it.
+pub fn update_team_body(name: Option<&str>, description: Option<&str>) -> serde_json::Value {
+    let mut body = serde_json::json!({});
+    if let Some(n) = name.map(str::trim).filter(|n| !n.is_empty()) {
+        body["displayName"] = serde_json::Value::String(n.to_string());
+    }
+    if let Some(d) = description {
+        body["description"] = serde_json::Value::String(d.trim().to_string());
+    }
+    body
+}
+
+/// Rename / re-describe one team (backing-group PATCH). At least one of
+/// name/description must carry a value; blank names never reach the
+/// server. Returns the trimmed team id on success.
+pub async fn update_team_data(
+    client: &TeamsClient,
+    team_id: &str,
+    name: Option<&str>,
+    description: Option<&str>,
+) -> Result<String> {
+    check_id("team_id", team_id)?;
+    let body = update_team_body(name, description);
+    anyhow::ensure!(
+        body.as_object().is_some_and(|o| !o.is_empty()),
+        "nothing to update (blank name, no description)"
+    );
+    client
+        .graph_patch(&update_team_path(team_id), &body)
+        .await?;
+    Ok(team_id.trim().to_string())
+}
+
+/// `POST /teams/{id}/archive|unarchive` paths. Pure so tests pin them.
+pub fn archive_team_path(team_id: &str) -> String {
+    format!("/teams/{}/archive", team_id.trim())
+}
+
+/// `POST /teams/{id}/unarchive` path. Pure so tests pin it.
+pub fn unarchive_team_path(team_id: &str) -> String {
+    format!("/teams/{}/unarchive", team_id.trim())
+}
+
+/// Archive one team (async server-side — the team flips after the call
+/// returns; callers re-list to confirm). Returns the trimmed team id.
+pub async fn archive_team_data(client: &TeamsClient, team_id: &str) -> Result<String> {
+    check_id("team_id", team_id)?;
+    client
+        .graph_post(&archive_team_path(team_id), &serde_json::json!({}))
+        .await?;
+    Ok(team_id.trim().to_string())
+}
+
+/// Restore one archived team. Returns the trimmed team id.
+pub async fn unarchive_team_data(client: &TeamsClient, team_id: &str) -> Result<String> {
+    check_id("team_id", team_id)?;
+    client
+        .graph_post(&unarchive_team_path(team_id), &serde_json::json!({}))
+        .await?;
+    Ok(team_id.trim().to_string())
+}
+
+/// `DELETE /groups/{id}` path (team id = group id): deleting the
+/// backing group deletes the team. Pure so tests pin it.
+pub fn delete_team_path(team_id: &str) -> String {
+    format!("/groups/{}", team_id.trim())
+}
+
+/// Delete one team (removes the backing M365 group too). Irreversible:
+/// callers confirm first. Returns the trimmed team id.
+pub async fn delete_team_data(client: &TeamsClient, team_id: &str) -> Result<String> {
+    check_id("team_id", team_id)?;
+    client.graph_delete(&delete_team_path(team_id)).await?;
+    Ok(team_id.trim().to_string())
+}
+
+/// `PUT /teams/{id}/photo/$value` path. Pure so tests pin it.
+pub fn team_photo_path(team_id: &str) -> String {
+    format!("/teams/{}/photo/$value", team_id.trim())
+}
+
+/// Set one team's picture (JPEG/PNG bytes, Graph caps photos at 4 MB).
+/// Returns the trimmed team id on success.
+pub async fn set_team_photo_data(
+    client: &TeamsClient,
+    team_id: &str,
+    jpeg: &[u8],
+    content_type: &str,
+) -> Result<String> {
+    check_id("team_id", team_id)?;
+    anyhow::ensure!(!jpeg.is_empty(), "empty photo bytes");
+    anyhow::ensure!(
+        jpeg.len() <= 4 * 1024 * 1024,
+        "photo over the 4 MB Graph cap"
+    );
+    client
+        .graph_put_bytes(&team_photo_path(team_id), jpeg.to_vec(), content_type)
+        .await?;
+    Ok(team_id.trim().to_string())
+}
+
+/// Rename / re-describe one team (prints to stdout).
+pub async fn update_team(
+    team_id: &str,
+    name: Option<&str>,
+    description: Option<&str>,
+) -> Result<()> {
+    let client = TeamsClient::new().await?;
+    let id = update_team_data(&client, team_id, name, description).await?;
+    println!("Updated team {}", id);
+    Ok(())
+}
+
+/// Archive one team (prints to stdout).
+pub async fn archive_team(team_id: &str) -> Result<()> {
+    let client = TeamsClient::new().await?;
+    let id = archive_team_data(&client, team_id).await?;
+    println!("Archived team {}", id);
+    Ok(())
+}
+
+/// Restore one archived team (prints to stdout).
+pub async fn unarchive_team(team_id: &str) -> Result<()> {
+    let client = TeamsClient::new().await?;
+    let id = unarchive_team_data(&client, team_id).await?;
+    println!("Unarchived team {}", id);
+    Ok(())
+}
+
+/// Delete one team (prints to stdout).
+pub async fn delete_team(team_id: &str) -> Result<()> {
+    let client = TeamsClient::new().await?;
+    let id = delete_team_data(&client, team_id).await?;
+    println!("Deleted team {}", id);
+    Ok(())
+}
+
+/// Set one team's picture from an image file (prints to stdout).
+pub async fn set_team_photo(team_id: &str, path: &str) -> Result<()> {
+    let client = TeamsClient::new().await?;
+    let bytes = std::fs::read(path).with_context(|| format!("cannot read photo file {}", path))?;
+    let content_type = if path.ends_with(".png") {
+        "image/png"
+    } else {
+        "image/jpeg"
+    };
+    let id = set_team_photo_data(&client, team_id, &bytes, content_type).await?;
+    println!("Set photo for team {}", id);
+    Ok(())
+}
+
+
 #[cfg(test)]
 mod mt_channel_tests {
     use super::*;
@@ -1102,6 +1271,30 @@ mod tests {
         assert!(check_id("team_id", "f09c6c30-1234-abcd-ef00-1234567890ab").is_ok());
         assert!(check_id("member_id", "aWQ9abcDEF123==").is_ok());
     }
+
+    #[test]
+    fn team_lifecycle_paths_and_bodies_pin_graph_shapes() {
+        assert_eq!(update_team_path("  t1 "), "/groups/t1");
+        assert_eq!(
+            update_team_body(Some("  Launch  "), None),
+            serde_json::json!({"displayName": "Launch"})
+        );
+        assert_eq!(
+            update_team_body(None, Some(" Plans ")),
+            serde_json::json!({"description": "Plans"})
+        );
+        assert_eq!(
+            update_team_body(Some("  "), Some("")),
+            serde_json::json!({"description": ""})
+        );
+        assert_eq!(update_team_body(Some(" "), None), serde_json::json!({}));
+        assert_eq!(update_team_body(None, None), serde_json::json!({}));
+        assert_eq!(archive_team_path("t1"), "/teams/t1/archive");
+        assert_eq!(unarchive_team_path("  t1 "), "/teams/t1/unarchive");
+        assert_eq!(delete_team_path("t1"), "/groups/t1");
+        assert_eq!(team_photo_path("t1"), "/teams/t1/photo/$value");
+    }
+
 
     #[test]
     fn paths_pin_graph_shapes() {

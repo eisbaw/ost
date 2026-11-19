@@ -61,7 +61,11 @@ pub use teams::{
     operation_team_id, operation_url, remove_team_member_data,
     set_channel_reaction_data, standard_team_template, unset_channel_reaction_data,
     TeamCreateResult, TeamsAsyncOperation, TEAM_CREATE_POLL_SECS,
-    TEAM_CREATE_TIMEOUT_SECS,
+    TEAM_CREATE_TIMEOUT_SECS, update_team, update_team_body, update_team_data,
+    update_team_path, archive_team, archive_team_data, archive_team_path,
+    unarchive_team, unarchive_team_data, unarchive_team_path, delete_team,
+    delete_team_data, delete_team_path, set_team_photo, set_team_photo_data,
+    team_photo_path,
 };
 #[allow(unused_imports)]
 pub use files::{
