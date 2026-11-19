@@ -8,6 +8,7 @@ use crate::auth::TokenStore;
 use crate::config::Config;
 
 const GRAPH_BASE: &str = "https://graph.microsoft.com/v1.0";
+const GRAPH_BETA_BASE: &str = "https://graph.microsoft.com/beta";
 const DEFAULT_CHAT_SERVICE: &str = "https://amer.ng.msg.teams.microsoft.com";
 const CHATSVCAGG: &str = "https://chatsvcagg.teams.microsoft.com";
 const DEFAULT_MIDDLE_TIER: &str = "https://teams.microsoft.com/api/mt/amer";
@@ -87,6 +88,25 @@ impl TeamsClient {
             .send()
             .await
             .with_context(|| format!("Graph GET {} failed", url))?;
+
+        check_response(resp, &url).await
+    }
+
+    /// GET request to the Graph **beta** endpoint (same bearer token).
+    /// Beta-only properties (channel `moderationSettings`) are absent
+    /// from v1.0.
+    pub async fn graph_beta_get(&self, path: &str) -> Result<reqwest::Response> {
+        let token = self.graph_token()?;
+        let url = format!("{}{}", GRAPH_BETA_BASE, path);
+        tracing::debug!("Graph-beta GET {}", url);
+
+        let resp = self
+            .http
+            .get(&url)
+            .bearer_auth(&token)
+            .send()
+            .await
+            .with_context(|| format!("Graph-beta GET {} failed", url))?;
 
         check_response(resp, &url).await
     }

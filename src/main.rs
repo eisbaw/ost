@@ -114,6 +114,40 @@ enum Commands {
     /// List joined teams and their channels
     Teams,
 
+    /// Channel moderation (Graph beta read, middle-tier write).
+    /// Bare: show who can post/reply. With flags: set, then read back.
+    /// --posts everyone|everyoneExceptGuests|moderators.
+    /// --replies everyone|authorAndModerators.
+    ChannelModeration {
+        /// Team id (from `teams` output)
+        #[arg(long)]
+        team: String,
+
+        /// Channel id (from `teams` output)
+        #[arg(long)]
+        channel: String,
+
+        /// Who can start new posts
+        #[arg(long)]
+        posts: Option<String>,
+
+        /// Who can reply to posts
+        #[arg(long)]
+        replies: Option<String>,
+    },
+
+    /// Team privacy switch (backing M365 group visibility).
+    /// Bare: show Private/Public. --set private|public: flip, then read back.
+    TeamVisibility {
+        /// Team id (from `teams` output)
+        #[arg(long)]
+        team: String,
+
+        /// Flip to `private` (invite-only) or `public`
+        #[arg(long)]
+        set: Option<String>,
+    },
+
     /// List shared files in a chat or channel
     Files {
         /// Chat or channel ID (from `chats` / `teams` output)
@@ -311,6 +345,30 @@ async fn main() -> Result<()> {
         }
         Commands::Teams => {
             api::list_teams().await?;
+        }
+        Commands::ChannelModeration {
+            team,
+            channel,
+            posts,
+            replies,
+        } => {
+            if posts.is_none() && replies.is_none() {
+                api::show_moderation(&team, &channel).await?;
+            } else {
+                tracing::info!("Setting channel moderation...");
+                api::set_moderation(&team, &channel, posts.as_deref(), replies.as_deref()).await?;
+            }
+        }
+        Commands::TeamVisibility { team, set } => {
+            match set.as_deref().map(|s| s.trim().to_ascii_lowercase()) {
+                None => api::show_visibility(&team).await?,
+                Some(which) if which.is_empty() => api::show_visibility(&team).await?,
+                Some(which) if which == "private" || which == "public" => {
+                    tracing::info!("Setting team visibility...");
+                    api::set_visibility(&team, which == "private").await?;
+                }
+                Some(other) => anyhow::bail!("--set must be 'private' or 'public' (got '{}')", other),
+            }
         }
         Commands::Files { chat_id, limit } => {
             tracing::info!("Fetching shared files...");

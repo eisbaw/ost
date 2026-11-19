@@ -1,6 +1,7 @@
 //! API client module for Microsoft Teams
 
 pub mod apps;
+mod channel_moderation;
 mod chat;
 pub mod client;
 mod files;
@@ -9,6 +10,7 @@ mod graph;
 mod me;
 pub mod media;
 mod presence;
+mod team_settings;
 mod teams;
 
 use anyhow::Result;
@@ -30,6 +32,12 @@ pub use teams::TeamMemberInfo;
 pub use teams::ChannelInfo;
 
 // Re-export data-returning functions for TUI integration
+pub use channel_moderation::{
+    moderation_body, moderation_data, moderation_path, moderation_read_path,
+    parse_moderation_settings, set_moderation, show_moderation, update_moderation_data,
+    ChannelModeration, POST_EVERYONE, POST_EXCEPT_GUESTS, POST_MODERATORS,
+    REPLY_AUTHOR_MODERATORS, REPLY_EVERYONE,
+};
 pub use chat::{
     delete_message_with_client, edit_message_body, edit_message_with_client,
     emoji_for_reaction_type, list_chats_data, message_url, reaction_add_body, reaction_add_url,
@@ -39,6 +47,10 @@ pub use chat::{
 pub use media::{fetch_media_data, MediaBytes, MAX_BYTES};
 pub use me::whoami_data;
 pub use presence::get_presence_data;
+pub use team_settings::{
+    set_visibility, show_visibility, team_visibility_data, update_team_visibility_data,
+    visibility_body, visibility_path, visibility_read_path, parse_visibility,
+};
 pub use teams::{
     add_member_body, add_team_member_data, channel_react_body,
     channel_reply_set_reaction_path, channel_reply_unset_reaction_path,
