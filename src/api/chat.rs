@@ -3,7 +3,7 @@
 //! Uses the Skype token with `Authentication: skypetoken={token}` header,
 //! bypassing Graph API which requires tenant admin consent for Chat.Read.
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
 use super::client::TeamsClient;
@@ -282,6 +282,352 @@ pub async fn send_praise_with_client_id(
         &uuid::Uuid::new_v4().to_string(),
     );
     post_with_receipt(client, &url, body, client_message_id).await
+}
+
+// STICKERS: native sticker send + detect.
+//
+// The official client sends a sticker as an AMS-hosted image plus a
+// chatsvc `RichText/Html` message (Burp capture, Turle 2022):
+//   content: <p><readonly aria-label="L" contenteditable="false"
+//     itemtype="http://schema.skype.com/Sticker" title="L"><img
+//     src="{view}" width="{w}" height="{h}" itemscope="image/png"
+//     itemtype="http://schema.skype.com/AMSImage" alt="{label}"
+//     id="{object_id}" itemid="{object_id}" href="{view}"
+//     target-src="{view}"></readonly></p>
+//   messagetype RichText/Html, contenttype text,
+//   amsreferences [object_id].
+// The image bytes reach AMS first (Netwoven walkthrough + gist agree):
+//   create: POST {asyncgw}/v1/objects, `Authorization: skype_token …`,
+//     {"type": "pish/image","permissions":{conv:["read"]},"filename":…}
+//     → {"id": object_id}
+//   upload: PUT {asyncgw}/v1/objects/{id}/content/imgpsh (octet-stream).
+// View: https://{cc}-api.asm.skype.com/v1/objects/{id}/views/imgo.
+// Region map (observed): amer chat ↔ us-prod.asyncgw + us-api.asm
+// (Netwoven); emea chat ↔ eu-api.asm (Turle Burp). eu-prod.asyncgw is
+// INFERRED (euno-prod.asyncgw sighted in media tests) — the trial must
+// verify it; unknown regions bail naming the host.
+// ---------------------------------------------------------------------------
+
+/// `itemtype` the official client stamps on sticker wrappers.
+pub const STICKER_ITEMTYPE: &str = "http://schema.skype.com/Sticker";
+
+/// Largest sticker file accepted (mirrors the simple-upload cap in
+/// files.rs: stickers are small PNGs, never multi-MB).
+pub const STICKER_IMAGE_MAX_BYTES: u64 = 4 * 1024 * 1024;
+
+/// Largest sticker edge the wire carries (official clients send
+/// ~300px; hostile/odd files never become giant bubbles).
+pub const STICKER_EDGE_MAX: u32 = 2048;
+
+/// Fallback alt text when the caller passes a blank label.
+pub const STICKER_DEFAULT_LABEL: &str = "Sticker";
+
+/// Effective label: trimmed, or the default when blank.
+pub fn sticker_effective_label(label: &str) -> String {
+    let t = label.trim();
+    if t.is_empty() {
+        STICKER_DEFAULT_LABEL.to_string()
+    } else {
+        t.to_string()
+    }
+}
+
+/// Guard the sticker POST args. Returns the effective label.
+/// Object ids are server-minted (`0-…`); anything outside the id
+/// charset or any non-https view URL is refused before any network.
+fn check_sticker_args(
+    object_id: &str,
+    view_url: &str,
+    label: &str,
+    width: u32,
+    height: u32,
+) -> Result<String> {
+    let oid = object_id.trim();
+    if oid.is_empty() {
+        bail!("empty sticker object id");
+    }
+    if !oid
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        bail!("bad sticker object id");
+    }
+    let view = view_url.trim();
+    let parsed = url::Url::parse(view).map_err(|_| anyhow::anyhow!("bad sticker view url"))?;
+    if parsed.scheme() != "https" || parsed.host_str().unwrap_or("").is_empty() {
+        bail!("bad sticker view url");
+    }
+    if width == 0 || height == 0 || width > STICKER_EDGE_MAX || height > STICKER_EDGE_MAX {
+        bail!("bad sticker dimensions");
+    }
+    Ok(sticker_effective_label(label))
+}
+
+/// Sticker HTML for one AMS object (exact official-client shape).
+pub fn sticker_content(
+    object_id: &str,
+    view_url: &str,
+    label: &str,
+    width: u32,
+    height: u32,
+) -> String {
+    let label = sticker_effective_label(label);
+    let e = html_escape(&label);
+    let v = html_escape(view_url.trim());
+    let oid = object_id.trim();
+    format!(
+        "<p><readonly aria-label=\"{e}\" contenteditable=\"false\" itemtype=\"http://schema.skype.com/Sticker\" title=\"{e}\"><img src=\"{v}\" width=\"{width}\" height=\"{height}\" itemscope=\"image/png\" itemtype=\"http://schema.skype.com/AMSImage\" alt=\"{e}\" id=\"{oid}\" itemid=\"{oid}\" href=\"{v}\" target-src=\"{v}\"></readonly></p>"
+    )
+}
+
+/// POST body for one sticker message (captured-body seam for tests:
+/// the exact JSON `chat_post` receives, minus transport).
+pub fn sticker_message_body(
+    object_id: &str,
+    view_url: &str,
+    label: &str,
+    width: u32,
+    height: u32,
+) -> serde_json::Value {
+    serde_json::json!({
+        "content": sticker_content(object_id, view_url, label, width, height),
+        "messagetype": "RichText/Html",
+        "contenttype": "text",
+        "amsreferences": [object_id.trim()],
+        "properties": {"importance": "", "subject": ""}
+    })
+}
+
+/// AMS create-object body for one sticker upload.
+pub fn sticker_create_body(conversation_id: &str, filename: &str) -> serde_json::Value {
+    let name = filename.trim();
+    serde_json::json!({
+        "type": "pish/image",
+        "permissions": {conversation_id.trim(): ["read"]},
+        "filename": if name.is_empty() { "sticker.png" } else { name }
+    })
+}
+
+/// Server-minted object id from a create answer (pure).
+pub fn parse_sticker_object_id(body: &serde_json::Value) -> Result<String> {
+    match body.get("id").and_then(|v| v.as_str()).map(str::trim) {
+        Some(id) if !id.is_empty() => Ok(id.to_string()),
+        _ => bail!("sticker create answer named no object id"),
+    }
+}
+
+/// PNG dimensions (width, height) from raw bytes: 8-byte signature +
+/// `IHDR` first, big-endian words at 16..24. Anything else → None
+/// (stickers are PNGs; GIF/JPEG never reach the wire as stickers).
+pub fn png_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    const SIG: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+    if bytes.len() < 24 || &bytes[..8] != SIG || &bytes[12..16] != b"IHDR" {
+        return None;
+    }
+    let w = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
+    let h = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
+    if w == 0 || h == 0 {
+        return None;
+    }
+    Some((w, h))
+}
+
+/// True when raw HTML carries the official sticker wrapper
+/// (case-insensitive; plain `<img>` photos are not stickers).
+pub fn is_sticker_html(html: &str) -> bool {
+    html.to_ascii_lowercase().contains("skype.com/sticker")
+}
+
+/// Sticker alt text from raw HTML: the `<img>` alt inside the sticker
+/// wrapper, else its `aria-label`/`title`. Entity-decoded, trimmed;
+/// None when absent, blank, or not a sticker at all.
+pub fn sticker_label(html: &str) -> Option<String> {
+    if !is_sticker_html(html) {
+        return None;
+    }
+    let lower = html.to_ascii_lowercase();
+    // Restrict mining to the readonly sticker span when present, so a
+    // quoted photo's alt never poses as the sticker label.
+    let scope = match lower.find("<readonly") {
+        Some(s) => match lower[s..].find("</readonly>") {
+            Some(e) => &html[s..s + e],
+            None => &html[s..],
+        },
+        None => html,
+    };
+    attr_value(scope, "alt")
+        .or_else(|| attr_value(scope, "aria-label"))
+        .or_else(|| attr_value(scope, "title"))
+        .map(|v| decode_entities(&v))
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+/// First `name="…"` / `name='…'` / bare value in `tag`
+/// (case-insensitive name; mirrors MessageRender's attr mining).
+/// Mined on the original bytes so values keep their case (a lowercased
+/// scratch copy would lowercase the label too).
+fn attr_value(tag: &str, name: &str) -> Option<String> {
+    let bytes = tag.as_bytes();
+    let want = name.as_bytes();
+    if want.is_empty() || want.len() > bytes.len() {
+        return None;
+    }
+    let mut i = 0;
+    while i + want.len() <= bytes.len() {
+        if bytes[i..i + want.len()].eq_ignore_ascii_case(want) {
+            // Name must stand alone: `title` must not match `xtitle`.
+            let before_ok = i == 0 || {
+                let p = bytes[i - 1];
+                !(p.is_ascii_alphanumeric() || p == b'-' || p == b'_' || p == b':')
+            };
+            let mut j = i + want.len();
+            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            if before_ok && j < bytes.len() && bytes[j] == b'=' {
+                j += 1;
+                while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                    j += 1;
+                }
+                if j < bytes.len() {
+                    // Split points are ASCII delimiters, so every slice
+                    // below lands on a char boundary.
+                    if bytes[j] == b'"' || bytes[j] == b'\'' {
+                        let q = bytes[j];
+                        let start = j + 1;
+                        let mut k = start;
+                        while k < bytes.len() && bytes[k] != q {
+                            k += 1;
+                        }
+                        return Some(tag[start..k].to_string());
+                    }
+                    let start = j;
+                    while j < bytes.len() && !bytes[j].is_ascii_whitespace() && bytes[j] != b'>' {
+                        j += 1;
+                    }
+                    if start < j {
+                        return Some(tag[start..j].to_string());
+                    }
+                }
+            }
+            i = (j + 1).max(i + 1);
+        } else {
+            i += 1;
+        }
+    }
+    None
+}
+
+/// The entity decoding `strip_html` applies, standalone for labels.
+fn decode_entities(s: &str) -> String {
+    s.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&nbsp;", " ")
+}
+
+/// Upload sticker bytes to AMS: create-object then PUT content.
+/// Returns the server-minted object id (pure guards first: no network
+/// on empty/oversize input or a blank conversation id).
+pub async fn upload_sticker_image_data(
+    client: &TeamsClient,
+    conversation_id: &str,
+    filename: &str,
+    bytes: &[u8],
+) -> Result<String> {
+    let cid = conversation_id.trim();
+    if cid.is_empty() {
+        bail!("empty conversation id");
+    }
+    if bytes.is_empty() {
+        bail!("empty sticker image");
+    }
+    if bytes.len() as u64 > STICKER_IMAGE_MAX_BYTES {
+        bail!("sticker image too large");
+    }
+    let base = client.asyncgw_base()?;
+    let create_url = format!("{base}/v1/objects");
+    let answer = client
+        .ams_post_json(&create_url, &sticker_create_body(cid, filename))
+        .await?;
+    let object_id = parse_sticker_object_id(&answer)?;
+    let put_url = format!("{base}/v1/objects/{object_id}/content/imgpsh");
+    client.ams_put_bytes(&put_url, bytes).await?;
+    Ok(object_id)
+}
+
+/// View URL for one AMS object on this client's region host.
+pub fn sticker_view_url(client: &TeamsClient, object_id: &str) -> Result<String> {
+    let host = client.asm_view_host()?;
+    Ok(format!(
+        "https://{host}/v1/objects/{}/views/imgo",
+        object_id.trim()
+    ))
+}
+
+/// Post one sticker message with a caller-owned `clientmessageid`
+/// (retries reuse it — same idempotency contract as text sends).
+pub async fn send_sticker_message_with_client_id(
+    client: &TeamsClient,
+    chat_id: &str,
+    object_id: &str,
+    view_url: &str,
+    label: &str,
+    width: u32,
+    height: u32,
+    client_message_id: &str,
+) -> Result<SentMessage> {
+    if chat_id.trim().is_empty() {
+        bail!("empty chat id");
+    }
+    let label = check_sticker_args(object_id, view_url, label, width, height)?;
+    let url = format!(
+        "{}/v1/users/ME/conversations/{}/messages",
+        client.chat_service_url(),
+        chat_id.trim()
+    );
+    post_with_receipt(
+        client,
+        &url,
+        sticker_message_body(object_id, view_url, &label, width, height),
+        client_message_id,
+    )
+    .await
+}
+
+/// Send a local PNG file as a sticker: probe dims, upload to AMS,
+/// post the sticker message. PNG-only (probe fails otherwise).
+pub async fn send_sticker(chat_id: &str, png_path: &str, label: &str) -> Result<()> {
+    let bytes = std::fs::read(png_path)
+        .with_context(|| format!("cannot read sticker file {png_path}"))?;
+    let (width, height) =
+        png_dimensions(&bytes).context("sticker file must be a PNG (dimensions unreadable)")?;
+    let client = TeamsClient::new().await?;
+    let filename = std::path::Path::new(png_path)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("sticker.png");
+    let object_id = upload_sticker_image_data(&client, chat_id, filename, &bytes).await?;
+    let view = sticker_view_url(&client, &object_id)?;
+    let sent = send_sticker_message_with_client_id(
+        &client,
+        chat_id,
+        &object_id,
+        &view,
+        label,
+        width,
+        height,
+        &new_client_message_id(),
+    )
+    .await?;
+    match sent.id {
+        Some(id) => println!("Sticker sent ({id})."),
+        None => println!("Sticker sent."),
+    }
+    Ok(())
 }
 
 // Idempotent sends. Every post carries a `clientmessageid`; the server
@@ -797,5 +1143,81 @@ mod idempotent_send_tests {
         for want in ["Awesome", "Jane", "Nice work", "Sam sent praise to"] {
             assert!(flat.contains(want), "missing {} in {}", want, flat);
         }
+    }
+}
+
+#[cfg(test)]
+mod sticker_tests {
+    use super::*;
+
+    // -- stickers -----------------------------------------------------------
+
+    const STICKER_HTML: &str = "<p><readonly aria-label=\"Party!\" contenteditable=\"false\" itemtype=\"http://schema.skype.com/Sticker\" title=\"Party!\"><img src=\"https://us-api.asm.skype.com/v1/objects/0-test-1/views/imgo\" width=\"100\" height=\"80\" itemscope=\"image/png\" itemtype=\"http://schema.skype.com/AMSImage\" alt=\"Party!\" id=\"0-test-1\" itemid=\"0-test-1\" href=\"https://us-api.asm.skype.com/v1/objects/0-test-1/views/imgo\" target-src=\"https://us-api.asm.skype.com/v1/objects/0-test-1/views/imgo\"></readonly></p>";
+
+    #[test]
+    fn sticker_body_matches_official_wire_shape() {
+        let view = "https://us-api.asm.skype.com/v1/objects/0-test-1/views/imgo";
+        let b = sticker_message_body("0-test-1", view, "Party!", 100, 80);
+        assert_eq!(b["messagetype"], "RichText/Html");
+        assert_eq!(b["contenttype"], "text");
+        assert_eq!(b["amsreferences"], serde_json::json!(["0-test-1"]));
+        assert_eq!(b["properties"], serde_json::json!({"importance": "", "subject": ""}));
+        assert_eq!(b["content"].as_str().unwrap(), STICKER_HTML);
+        // Label is the alt text: hostile markup never lands raw.
+        let evil = sticker_message_body("0-test-1", view, "<b>\"x\"</b>", 100, 80);
+        let content = evil["content"].as_str().unwrap();
+        assert!(content.contains("alt=\"&lt;b&gt;&quot;x&quot;&lt;/b&gt;\""));
+        assert!(!content.contains("<b>"));
+        // Blank label falls back; surrounding space trims.
+        assert!(sticker_content("0-a", view, "  ", 10, 10).contains("alt=\"Sticker\""));
+    }
+
+    #[test]
+    fn sticker_create_body_shape_and_filename_default() {
+        let b = sticker_create_body("19:s@thread.v2", "party.png");
+        assert_eq!(
+            b,
+            serde_json::json!({"type": "pish/image", "permissions": {"19:s@thread.v2": ["read"]}, "filename": "party.png"})
+        );
+        assert_eq!(sticker_create_body("19:s@thread.v2", "  ")["filename"], "sticker.png");
+        assert_eq!(sticker_effective_label("  hi  "), "hi");
+        assert_eq!(sticker_effective_label("   "), STICKER_DEFAULT_LABEL);
+        assert!(parse_sticker_object_id(&serde_json::json!({"id": " 0-x "})).unwrap() == "0-x");
+        assert!(parse_sticker_object_id(&serde_json::json!({})).is_err());
+        assert!(parse_sticker_object_id(&serde_json::json!({"id": " "})).is_err());
+    }
+
+    #[test]
+    fn png_dimensions_reads_ihdr_rejects_junk() {
+        // 24-byte minimal PNG: sig + len + IHDR + 334x250.
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        png.extend_from_slice(&[0, 0, 0, 13]);
+        png.extend_from_slice(b"IHDR");
+        png.extend_from_slice(&334u32.to_be_bytes());
+        png.extend_from_slice(&250u32.to_be_bytes());
+        assert_eq!(png_dimensions(&png), Some((334, 250)));
+        assert_eq!(png_dimensions(b"GIF89a..."), None);
+        assert_eq!(png_dimensions(&png[..10]), None);
+        let mut zero = png.clone();
+        zero[16..20].copy_from_slice(&0u32.to_be_bytes());
+        assert_eq!(png_dimensions(&zero), None);
+    }
+
+    #[test]
+    fn sticker_detect_and_label_mining() {
+        assert!(is_sticker_html(STICKER_HTML));
+        assert!(is_sticker_html(&STICKER_HTML.to_uppercase().replace("SKYPE.COM/STICKER", "skype.com/sticker")));
+        assert!(!is_sticker_html("<p><img src=\"https://h/x.png\"></p>"));
+        assert!(!is_sticker_html("<p>hi</p>"));
+        assert_eq!(sticker_label(STICKER_HTML).as_deref(), Some("Party!"));
+        // aria-label fallback; entity-decoded; quoted-photo alts ignored.
+        let aria = "<p><readonly itemtype=\"http://schema.skype.com/Sticker\" aria-label=\"Go &amp; win\"><img src=\"x\"></readonly></p>";
+        assert_eq!(sticker_label(aria).as_deref(), Some("Go & win"));
+        let title = "<readonly itemType=\"http://schema.skype.com/Sticker\" TITLE=\"Tada\"><img src=\"x\"></readonly>";
+        assert_eq!(sticker_label(title).as_deref(), Some("Tada"));
+        assert_eq!(sticker_label("<p><img src=\"x\" alt=\"photo\"></p>"), None);
+        // Quoted photo alt outside the span never poses as the label.
+        let mixed = format!("<p><img src=\"q\" alt=\"quoted\"></p>{STICKER_HTML}");
+        assert_eq!(sticker_label(&mixed).as_deref(), Some("Party!"));
     }
 }

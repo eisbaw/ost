@@ -32,6 +32,14 @@ pub use chat::{
     praise_card_content, praise_message_body, send_praise_with_client_id,
     ADAPTIVE_CARD_CONTENT_TYPE, PRAISE_APP_ID,
 };
+// OstMac stickers: native AMS-upload sticker send + detect.
+pub use chat::{
+    is_sticker_html, parse_sticker_object_id, png_dimensions,
+    send_sticker_message_with_client_id, sticker_content, sticker_create_body,
+    sticker_effective_label, sticker_label, sticker_message_body, sticker_view_url,
+    upload_sticker_image_data, STICKER_DEFAULT_LABEL, STICKER_EDGE_MAX, STICKER_IMAGE_MAX_BYTES,
+    STICKER_ITEMTYPE,
+};
 pub use media::{fetch_media_data, MediaBytes, MAX_BYTES};
 pub use me::whoami_data;
 pub use presence::get_presence_data;
@@ -50,6 +58,11 @@ pub async fn read_messages(chat_id: &str, limit: usize) -> Result<()> {
 /// Send a message to a chat (native Teams API)
 pub async fn send_message(to: &str, message: &str) -> Result<()> {
     chat::send_message(to, message).await
+}
+
+/// Send a local PNG file as a sticker (AMS upload + sticker message)
+pub async fn send_sticker(to: &str, png_path: &str, label: &str) -> Result<()> {
+    chat::send_sticker(to, png_path, label).await
 }
 
 /// Get current presence status
