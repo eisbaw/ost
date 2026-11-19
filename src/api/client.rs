@@ -11,6 +11,30 @@ const GRAPH_BASE: &str = "https://graph.microsoft.com/v1.0";
 const DEFAULT_CHAT_SERVICE: &str = "https://amer.ng.msg.teams.microsoft.com";
 const CHATSVCAGG: &str = "https://chatsvcagg.teams.microsoft.com";
 
+/// (asyncgw object-store base, asm view host) for a chat-service base
+/// URL (stickers). Observed: amer ↔ us-prod + us-api (Netwoven);
+/// emea ↔ eu-api (Turle Burp); eu-prod.asyncgw is inferred. Unknown
+/// regions bail naming the host so the trial records the real hosts.
+pub fn sticker_region_hosts(chat_service_base: &str) -> Result<(&'static str, &'static str)> {
+    let host = url::Url::parse(chat_service_base)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
+        .unwrap_or_default();
+    if host.starts_with("amer.") {
+        Ok((
+            "https://us-prod.asyncgw.teams.microsoft.com",
+            "us-api.asm.skype.com",
+        ))
+    } else if host.starts_with("emea.") {
+        Ok((
+            "https://eu-prod.asyncgw.teams.microsoft.com",
+            "eu-api.asm.skype.com",
+        ))
+    } else {
+        bail!("sticker upload region unknown for chat host {host}")
+    }
+}
+
 /// Authenticated client that handles both Graph (AAD) and Teams (Skype) APIs.
 pub struct TeamsClient {
     http: reqwest::Client,
@@ -173,6 +197,83 @@ impl TeamsClient {
             .unwrap_or_else(|| CHATSVCAGG.to_string())
     }
 
+    /// AMS object-store base for sticker image uploads.
+    /// Unit tests point it at the fake through the `asyncgwBase`
+    /// region key (same seam as `graphBase`/`csaBase`); production
+    /// derives it from the chat region (amer→us-prod, emea→eu-prod;
+    /// anything else bails naming the host so the trial records the
+    /// real hosts).
+    pub fn asyncgw_base(&self) -> Result<String> {
+        #[cfg(test)]
+        if let Some(b) = self
+            .config
+            .get_region_gtms()
+            .and_then(|v| v.get("asyncgwBase").and_then(|s| s.as_str()).map(String::from))
+        {
+            return Ok(b);
+        }
+        Ok(sticker_region_hosts(&self.chat_service_url())?.0.to_string())
+    }
+
+    /// ASM view host for sticker image URLs. Same
+    /// test seam (`asmHost`); production derives amer→us-api,
+    /// emea→eu-api.
+    pub fn asm_view_host(&self) -> Result<String> {
+        #[cfg(test)]
+        if let Some(b) = self
+            .config
+            .get_region_gtms()
+            .and_then(|v| v.get("asmHost").and_then(|s| s.as_str()).map(String::from))
+        {
+            return Ok(b);
+        }
+        Ok(sticker_region_hosts(&self.chat_service_url())?.1.to_string())
+    }
+
+    /// POST JSON to the AMS object store with `Authorization:
+    /// skype_token …` (sticker image create; the chat service's
+    /// `Authentication: skypetoken=` header is refused here).
+    pub async fn ams_post_json(
+        &self,
+        url: &str,
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let token = self.skype_token()?;
+        tracing::debug!("AMS POST {}", url);
+        let resp = self
+            .http
+            .post(url)
+            .header("Authorization", format!("skype_token {}", token))
+            .header("x-ms-client-version", "1415/1.0.0.2020050625")
+            .json(body)
+            .send()
+            .await
+            .with_context(|| format!("AMS POST {} failed", url))?;
+        let resp = check_response(resp, url).await?;
+        resp.json()
+            .await
+            .with_context(|| format!("AMS POST {} answer is not JSON", url))
+    }
+
+    /// PUT bytes to the AMS object store with `Authorization:
+    /// skype_token …` (sticker image content upload).
+    pub async fn ams_put_bytes(&self, url: &str, bytes: &[u8]) -> Result<()> {
+        let token = self.skype_token()?;
+        tracing::debug!("AMS PUT {} ({} bytes)", url, bytes.len());
+        let resp = self
+            .http
+            .put(url)
+            .header("Authorization", format!("skype_token {}", token))
+            .header("x-ms-client-version", "1415/1.0.0.2020050625")
+            .header("Content-Type", "application/octet-stream")
+            .body(bytes.to_vec())
+            .send()
+            .await
+            .with_context(|| format!("AMS PUT {} failed", url))?;
+        check_response(resp, url).await?;
+        Ok(())
+    }
+
     /// GET using `Authorization: Bearer {skype_token}` with client version header (CSA/AFD endpoint).
     pub async fn csa_get(&self, url: &str) -> Result<reqwest::Response> {
         let token = self.skype_token()?;
@@ -204,6 +305,46 @@ impl TeamsClient {
             .with_context(|| format!("Chat GET {} failed", url))?;
 
         check_response(resp, url).await
+    }
+
+    /// Raw-bytes GET for inline chat media (om-richmedia). Microsoft media
+    /// hosts (see `media::needs_auth`) attach the Skype token; public hosts
+    /// fetch without auth so the token never leaks to third parties.
+    /// Rejects over-cap payloads (never truncated).
+    pub async fn media_get(&self, url: &str) -> Result<super::media::MediaBytes> {
+        let mut req = self.http.get(url);
+        if super::media::needs_auth(url) {
+            let token = self.skype_token()?;
+            req = req
+                .header("Authentication", format!("skypetoken={}", token))
+                .header("X-SkypeToken", &token);
+        }
+        tracing::debug!("Media GET {}", url);
+        let resp = req
+            .send()
+            .await
+            .with_context(|| format!("Media GET {} failed", url))?;
+        let resp = check_response(resp, url).await?;
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(String::from);
+        let bytes = resp
+            .bytes()
+            .await
+            .with_context(|| format!("Media GET {} body failed", url))?;
+        if bytes.len() > super::media::MAX_BYTES {
+            anyhow::bail!(
+                "Media {} exceeds {} bytes",
+                url,
+                super::media::MAX_BYTES
+            );
+        }
+        Ok(super::media::MediaBytes {
+            data: bytes.to_vec(),
+            content_type,
+        })
     }
 
     /// POST using `Authentication: skypetoken=...` header (native chat API).

@@ -68,6 +68,21 @@ enum Commands {
         message: String,
     },
 
+    /// Send a local PNG file as a sticker (AMS upload + sticker message)
+    SendSticker {
+        /// Chat thread ID (from `chats` output)
+        #[arg(short, long)]
+        to: String,
+
+        /// Local PNG file to send as a sticker
+        #[arg(short, long)]
+        file: String,
+
+        /// Sticker label (alt text; blank = "Sticker")
+        #[arg(short, long, default_value = "")]
+        label: String,
+    },
+
     /// List joined teams and their channels
     Teams,
 
@@ -192,6 +207,10 @@ async fn main() -> Result<()> {
         Commands::Send { to, message } => {
             tracing::info!("Sending message...");
             api::send_message(&to, &message).await?;
+        }
+        Commands::SendSticker { to, file, label } => {
+            tracing::info!("Sending sticker...");
+            api::send_sticker(&to, &file, &label).await?;
         }
         Commands::Trouter => {
             trouter::connect_and_run().await?;
