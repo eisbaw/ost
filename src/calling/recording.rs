@@ -440,6 +440,117 @@ pub async fn start_call_recording(
     })
 }
 
+/// HTTP-only recording start for embedders (FFI): no Trouter socket is
+/// kept there, so this runs the add-bot → extract → transcription →
+/// recording sequence over HTTP only. The recorder service URL comes
+/// from the add-participant HTTP response (primary path); when the
+/// response lacks recorder info this bails instead of waiting on
+/// Trouter (the socket-owning [`start_call_recording`] covers that path
+/// for the CLI). `transcription_only` skips the recording start (the
+/// Transcribe control); otherwise both transcription and recording
+/// start (the Record control). Returns the recorder service base and
+/// conversation id the stop calls need.
+pub async fn start_recording_http(
+    http: &reqwest::Client,
+    params: &RecordingParams<'_>,
+    transcription_only: bool,
+) -> Result<(String, String)> {
+    let add_response = add_recorder_bot(http, params).await?;
+    let (recorder_base, recorder_conv_id) = serde_json::from_str::<serde_json::Value>(&add_response)
+        .ok()
+        .and_then(|v| extract_recorder_from_payload(&v))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Recorder service URL not in add-participant response; \
+                 live Trouter wait is unavailable on this path"
+            )
+        })?;
+    tracing::info!(
+        "Recorder service discovered: base={}, conv_id={}",
+        recorder_base,
+        recorder_conv_id
+    );
+    let params = RecordingParams {
+        conversation_id: &recorder_conv_id,
+        ..*params
+    };
+    start_transcription_at(http, &params, &recorder_base).await?;
+    if !transcription_only {
+        tracing::info!(
+            "Waiting {}s before starting recording...",
+            TRANSCRIPTION_TO_RECORDING_DELAY_SECS
+        );
+        tokio::time::sleep(Duration::from_secs(TRANSCRIPTION_TO_RECORDING_DELAY_SECS)).await;
+        start_recording_at(http, &params, &recorder_base).await?;
+    }
+    tracing::info!("Recording flow complete (transcription_only={})", transcription_only);
+    Ok((recorder_base, recorder_conv_id))
+}
+
+/// Transcription start on an existing recorder session (the Transcribe
+/// control's start when the bot is already in the call): `params` must
+/// carry the recorder conversation id and `recorder_base` its service
+/// base (both returned by [`start_recording_http`]).
+pub async fn start_transcription_http(
+    http: &reqwest::Client,
+    params: &RecordingParams<'_>,
+    recorder_base: &str,
+) -> Result<()> {
+    start_transcription_at(http, params, recorder_base).await
+}
+
+/// Recording start on an existing recorder session (the Record control's
+/// start when transcription is already running): same contract as
+/// [`start_transcription_http`].
+pub async fn start_recording_only_http(
+    http: &reqwest::Client,
+    params: &RecordingParams<'_>,
+    recorder_base: &str,
+) -> Result<()> {
+    start_recording_at(http, params, recorder_base).await
+}
+
+/// Stop transcription only (the Transcribe control's stop): the recording
+/// leg keeps running when one is active.
+pub async fn stop_transcription_http(http: &reqwest::Client, session: &RecordingSession) -> Result<()> {
+    let url = format!(
+        "{}/v2/oncommand/{}",
+        session.recorder_base, session.conversation_id
+    );
+    let payload = serde_json::json!({
+        "timestamp": Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        "participantMri": session.caller_mri,
+        "participantLegId": session.participant_id,
+        "action": "stop",
+        "mode": "transcription",
+        "processingModes": ["closedCaptions"],
+        "participantSkypeToken": ""
+    });
+
+    tracing::info!("Stopping transcription -> POST {}", url);
+    let resp = http
+        .post(&url)
+        .header(
+            "Authorization",
+            format!("Bearer {}", session.recorder_token),
+        )
+        .header("x-skypetoken", &session.skype_token)
+        .header("x-microsoft-skype-chain-id", &session.chain_id)
+        .header("Content-Type", "application/json")
+        .json(&payload)
+        .send()
+        .await
+        .context("Failed to POST stop transcription")?;
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    tracing::info!(
+        "Stop transcription response ({}): {}",
+        status,
+        &body[..body.len().min(200)]
+    );
+    Ok(())
+}
+
 /// Active recording session info needed to stop recording.
 pub struct RecordingSession {
     pub recorder_base: String,
@@ -490,38 +601,8 @@ pub async fn stop_call_recording(http: &reqwest::Client, session: &RecordingSess
         &body[..body.len().min(200)]
     );
 
-    // Stop transcription
-    let payload = serde_json::json!({
-        "timestamp": Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-        "participantMri": session.caller_mri,
-        "participantLegId": session.participant_id,
-        "action": "stop",
-        "mode": "transcription",
-        "processingModes": ["closedCaptions"],
-        "participantSkypeToken": ""
-    });
-
-    tracing::info!("Stopping transcription -> POST {}", url);
-    let resp = http
-        .post(&url)
-        .header(
-            "Authorization",
-            format!("Bearer {}", session.recorder_token),
-        )
-        .header("x-skypetoken", &session.skype_token)
-        .header("x-microsoft-skype-chain-id", &session.chain_id)
-        .header("Content-Type", "application/json")
-        .json(&payload)
-        .send()
-        .await
-        .context("Failed to POST stop transcription")?;
-    let status = resp.status();
-    let body = resp.text().await.unwrap_or_default();
-    tracing::info!(
-        "Stop transcription response ({}): {}",
-        status,
-        &body[..body.len().min(200)]
-    );
+    // Stop transcription (shared with the transcribe-only stop path).
+    stop_transcription_http(http, session).await?;
 
     Ok(())
 }
