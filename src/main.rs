@@ -68,8 +68,198 @@ enum Commands {
         message: String,
     },
 
+    /// Edit one own message
+    Edit {
+        /// Chat thread ID (from `chats` output)
+        #[arg(short, long)]
+        to: String,
+
+        /// Server message id (from `read` verbose logs)
+        #[arg(long)]
+        message_id: String,
+
+        /// Replacement text
+        message: String,
+    },
+
+    /// Delete one own message
+    Delete {
+        /// Chat thread ID (from `chats` output)
+        #[arg(short, long)]
+        to: String,
+
+        /// Server message id (from `read` verbose logs)
+        #[arg(long)]
+        message_id: String,
+    },
+
+    /// Add an emoji reaction to a message (one of 👍 ❤️ 😂 😮 😢 😠)
+    React {
+        /// Chat thread ID (from `chats` output)
+        #[arg(short, long)]
+        to: String,
+
+        /// Server message id (from `read` JSON via library)
+        #[arg(long)]
+        message_id: String,
+
+        /// Picker emoji (e.g. 👍)
+        emoji: String,
+
+        /// Remove instead of add
+        #[arg(long)]
+        remove: bool,
+    },
+
     /// List joined teams and their channels
     Teams,
+
+    /// List shared files in a chat or channel
+    Files {
+        /// Chat or channel ID (from `chats` / `teams` output)
+        chat_id: String,
+
+        /// Maximum number of files to show
+        #[arg(short, long, default_value = "20")]
+        limit: usize,
+    },
+
+    /// Download a shared file by drive+item id
+    FilesDownload {
+        /// Drive ID (from `files` output)
+        drive_id: String,
+
+        /// DriveItem ID
+        item_id: String,
+
+        /// Destination file path
+        out: String,
+    },
+
+    /// Upload a local file to a chat or channel (<4 MB)
+    FilesUpload {
+        /// Chat or channel ID (from `chats` / `teams` output)
+        #[arg(short, long)]
+        to: String,
+
+        /// Local file path
+        path: String,
+    },
+
+    /// Create a view-only sharing link for a shared file
+    FilesLink {
+        /// Drive ID (from `files` list output)
+        drive_id: String,
+
+        /// DriveItem ID
+        item_id: String,
+
+        /// Link scope: organization (org-only, default) or anonymous
+        #[arg(long, default_value = "organization")]
+        scope: String,
+    },
+
+    /// Search OneDrive files by name/content (om-jb-filesearch)
+    FileSearch {
+        /// Free-text query
+        query: String,
+
+        /// Maximum number of files to show
+        #[arg(short, long, default_value = "25")]
+        limit: usize,
+    },
+
+    /// Search the directory for people (om-jb-filesearch)
+    PeopleSearch {
+        /// Free-text query (matches display name)
+        query: String,
+
+        /// Maximum number of people to show
+        #[arg(short, long, default_value = "25")]
+        limit: usize,
+    },
+
+    /// Team roster (Graph /teams/{id}/members).
+    /// Bare: list members + owners. --owners: owners only.
+    /// --add <user-id-or-upn> [--owner]: add. --remove <membership-id>: remove.
+    Members {
+        /// Team id (from `teams` output)
+        #[arg(long)]
+        team: String,
+
+        /// Show owners only (list mode)
+        #[arg(long)]
+        owners: bool,
+
+        /// Add this user id or UPN to the team
+        #[arg(long)]
+        add: Option<String>,
+
+        /// Grant the owner role with --add
+        #[arg(long)]
+        owner: bool,
+
+        /// Remove this membership id (from list output) from the team
+        #[arg(long)]
+        remove: Option<String>,
+    },
+
+    /// Private/shared channel management (Graph /teams/{id}/channels).
+    /// --create NAME: create (needs --type + --owner for private/shared;
+    /// --type defaults to standard). Otherwise the command targets the
+    /// channel in --channel: bare lists members (+ --owners filters),
+    /// --add adds, --remove removes a membership id, --archive archives,
+    /// --unarchive restores.
+    Channels {
+        /// Team id (from `teams` output)
+        #[arg(long)]
+        team: String,
+
+        /// Channel id (from `teams` output; member/archive ops)
+        #[arg(long)]
+        channel: Option<String>,
+
+        /// Create a channel with this name
+        #[arg(long)]
+        create: Option<String>,
+
+        /// Channel type for --create: standard, private or shared
+        #[arg(long = "type", value_name = "TYPE")]
+        ctype: Option<String>,
+
+        /// Owner user id or UPN for --create (repeatable; private/shared
+        /// need at least one; shared takes exactly one)
+        #[arg(long, value_name = "USER")]
+        owner: Vec<String>,
+
+        /// Description for --create
+        #[arg(long)]
+        description: Option<String>,
+
+        /// Show owners only (list mode)
+        #[arg(long)]
+        owners: bool,
+
+        /// Add this user id or UPN to the channel
+        #[arg(long)]
+        add: Option<String>,
+
+        /// Grant the owner role with --add
+        #[arg(long)]
+        owner_flag: bool,
+
+        /// Remove this membership id (from list output) from the channel
+        #[arg(long)]
+        remove: Option<String>,
+
+        /// Archive the channel (async server-side; re-read to confirm)
+        #[arg(long)]
+        archive: bool,
+
+        /// Restore an archived channel
+        #[arg(long)]
+        unarchive: bool,
+    },
 
     /// Show current user info (verify auth works)
     Whoami,
@@ -179,6 +369,127 @@ async fn main() -> Result<()> {
         Commands::Teams => {
             api::list_teams().await?;
         }
+        Commands::Files { chat_id, limit } => {
+            tracing::info!("Fetching shared files...");
+            api::list_files(&chat_id, limit).await?;
+        }
+        Commands::FilesDownload {
+            drive_id,
+            item_id,
+            out,
+        } => {
+            api::download_file(&drive_id, &item_id, &out).await?;
+        }
+        Commands::FilesUpload { to, path } => {
+            tracing::info!("Uploading file...");
+            api::upload_file(&to, &path).await?;
+        }
+        Commands::FilesLink {
+            drive_id,
+            item_id,
+            scope,
+        } => {
+            api::create_link(&drive_id, &item_id, &scope).await?;
+        }
+        Commands::FileSearch { query, limit } => {
+            tracing::info!("Searching files...");
+            api::search_files(&query, limit).await?;
+        }
+        Commands::PeopleSearch { query, limit } => {
+            tracing::info!("Searching people...");
+            api::search_people(&query, limit).await?;
+        }
+        Commands::Members {
+            team,
+            owners,
+            add,
+            owner,
+            remove,
+        } => {
+            if let Some(user) = add {
+                if remove.is_some() {
+                    anyhow::bail!("--add and --remove are exclusive");
+                }
+                tracing::info!("Adding team member...");
+                api::add_team_member(&team, &user, owner).await?;
+            } else if let Some(member) = remove {
+                tracing::info!("Removing team member...");
+                api::remove_team_member(&team, &member).await?;
+            } else {
+                api::list_team_members(&team, owners).await?;
+            }
+        }
+        Commands::Channels {
+            team,
+            channel,
+            create,
+            ctype,
+            owner,
+            description,
+            owners,
+            add,
+            owner_flag,
+            remove,
+            archive,
+            unarchive,
+        } => {
+            if let Some(name) = create {
+                if channel.is_some()
+                    || add.is_some()
+                    || remove.is_some()
+                    || archive
+                    || unarchive
+                {
+                    anyhow::bail!("--create is exclusive with member/archive ops");
+                }
+                tracing::info!("Creating channel...");
+                let owners_ref: Vec<&str> = owner.iter().map(String::as_str).collect();
+                api::create_channel_typed(
+                    &team,
+                    &name,
+                    description.as_deref(),
+                    ctype.as_deref(),
+                    &owners_ref,
+                )
+                .await?;
+            } else if let Some(channel_id) = channel {
+                let mut acted = false;
+                if let Some(user) = add {
+                    if remove.is_some() || archive || unarchive {
+                        anyhow::bail!("--add is exclusive with --remove/--archive/--unarchive");
+                    }
+                    tracing::info!("Adding channel member...");
+                    api::add_channel_member(&team, &channel_id, &user, owner_flag).await?;
+                    acted = true;
+                }
+                if let Some(member) = remove {
+                    if archive || unarchive {
+                        anyhow::bail!("--remove is exclusive with --archive/--unarchive");
+                    }
+                    tracing::info!("Removing channel member...");
+                    api::remove_channel_member(&team, &channel_id, &member).await?;
+                    acted = true;
+                }
+                if archive {
+                    if unarchive {
+                        anyhow::bail!("--archive and --unarchive are exclusive");
+                    }
+                    tracing::info!("Archiving channel...");
+                    api::archive_channel(&team, &channel_id).await?;
+                    acted = true;
+                }
+                if unarchive {
+                    tracing::info!("Unarchiving channel...");
+                    api::unarchive_channel(&team, &channel_id).await?;
+                    acted = true;
+                }
+                if !acted {
+                    api::list_channel_members(&team, &channel_id, owners).await?;
+                }
+            } else {
+                anyhow::bail!("pass --create NAME or --channel ID (see --help)");
+            }
+        }
         Commands::Whoami => {
             api::whoami().await?;
         }
@@ -192,6 +503,26 @@ async fn main() -> Result<()> {
         Commands::Send { to, message } => {
             tracing::info!("Sending message...");
             api::send_message(&to, &message).await?;
+        }
+        Commands::Edit {
+            to,
+            message_id,
+            message,
+        } => {
+            tracing::info!("Editing message...");
+            api::edit_message(&to, &message_id, &message).await?;
+        }
+        Commands::Delete { to, message_id } => {
+            tracing::info!("Deleting message...");
+            api::delete_message(&to, &message_id).await?;
+        }
+        Commands::React {
+            to,
+            message_id,
+            emoji,
+            remove,
+        } => {
+            api::react(&to, &message_id, &emoji, remove).await?;
         }
         Commands::Trouter => {
             trouter::connect_and_run().await?;

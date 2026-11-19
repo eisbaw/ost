@@ -10,6 +10,14 @@
 
 set -euo pipefail
 
+# Live-write guard: this script WRITES to the signed-in
+# tenant (self-chat / self-call only). It never runs by default; opt in
+# explicitly with OST_E2E_LIVE_WRITES=1.
+if [ "${OST_E2E_LIVE_WRITES:-}" != "1" ]; then
+    echo "SKIP: live-write e2e; set OST_E2E_LIVE_WRITES=1 to run" >&2
+    exit 0
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CLI_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 CLI="$CLI_DIR/target/debug/teams-cli"
