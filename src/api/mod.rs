@@ -33,9 +33,12 @@ pub use teams::ChannelInfo;
 
 // Re-export data-returning functions for TUI integration
 pub use channel_moderation::{
-    moderation_body, moderation_data, moderation_path, moderation_read_path,
-    parse_moderation_settings, set_moderation, show_moderation, update_moderation_data,
-    ChannelModeration, POST_EVERYONE, POST_EXCEPT_GUESTS, POST_MODERATORS,
+    moderation_data, moderation_path, moderation_read_path,
+    parse_moderation_settings, parse_thread_settings, posts_perm, render_thread_settings,
+    replies_perm, set_moderation, show_moderation, thread_settings_data, thread_settings_thread_url,
+    thread_settings_url, update_moderation_data,
+    ChannelModeration, ThreadChannelSettings, CHANNEL_SETTINGS_PROPERTY,
+    POST_EVERYONE, POST_EXCEPT_GUESTS, POST_MODERATORS,
     REPLY_AUTHOR_MODERATORS, REPLY_EVERYONE,
 };
 pub use chat::{

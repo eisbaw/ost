@@ -114,7 +114,8 @@ enum Commands {
     /// List joined teams and their channels
     Teams,
 
-    /// Channel moderation (Graph beta read, middle-tier write).
+    /// Channel moderation (Graph beta read, chat-service thread-property
+    /// write; standard channels only — General is service-restricted).
     /// Bare: show who can post/reply. With flags: set, then read back.
     /// --posts everyone|everyoneExceptGuests|moderators.
     /// --replies everyone|authorAndModerators.
