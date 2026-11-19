@@ -27,10 +27,10 @@ pub use chat::{
     read_messages_data, read_messages_page, send_message_with_client, send_message_with_client_id,
     sent_id_from_response, SentMessage,
 };
-// OstMac PRAISE: Praise card post.
+// OstMac PRAISE: Praise via Graph, unattributed.
 pub use chat::{
-    praise_card_content, praise_message_body, send_praise_with_client_id,
-    ADAPTIVE_CARD_CONTENT_TYPE, PRAISE_APP_ID,
+    graph_posted_message_id, praise_card_content, praise_graph_message_body,
+    praise_graph_post_path, send_praise_with_client_id, ADAPTIVE_CARD_CONTENT_TYPE,
 };
 pub use media::{fetch_media_data, MediaBytes, MAX_BYTES};
 pub use me::whoami_data;

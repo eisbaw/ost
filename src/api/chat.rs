@@ -192,8 +192,6 @@ pub async fn send_message_with_client(
     Ok(())
 }
 
-/// Praise app id real clients stamp on the card attachment.
-pub const PRAISE_APP_ID: &str = "d832a33f-28c2-4969-8ad0-4fee681dc5b4";
 /// Attachment content type for the Praise Adaptive Card.
 pub const ADAPTIVE_CARD_CONTENT_TYPE: &str = "application/vnd.microsoft.card.adaptive";
 
@@ -226,38 +224,55 @@ pub fn praise_card_content(badge: &str, recipient: &str, note: &str, sender: &st
     })
 }
 
-/// POST body for one Praise send (pure, captured official-client
-/// shape): HTML content naming the attachment id plus one Adaptive
-/// Card attachment. `attachment_id` is caller-owned (a fresh GUID per
-/// send); empty badge/recipient is rejected by the caller. The
-/// attachment carries the Praise `appId` attribution plus a per-card
-/// `cardClientId` (32-hex form of the attachment GUID) — without
-/// these the server drops the attachment at write (body="" and
-/// attachments=[] from birth; praiselive R1b).
-pub fn praise_message_body(
+/// Graph POST path for one Praise send (pure so tests pin it). The
+/// `/chats/{id}/messages` route accepts channel conversation ids too
+/// (live-proven P15/P16), so no team lookup is needed for channels.
+pub fn praise_graph_post_path(chat_id: &str) -> String {
+    format!("/chats/{}/messages", chat_id.trim())
+}
+
+/// Server message id from a Graph chatMessage POST answer (pure): the
+/// top-level `id` of the created message object.
+pub fn graph_posted_message_id(text: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(text).ok()?;
+    v.get("id")?.as_str().map(str::to_string)
+}
+
+/// POST body for one Praise send (pure, live-proven shape P14/P16):
+/// a Graph chatMessage whose HTML body names the attachment id plus
+/// one Adaptive Card attachment carrying the card JSON as a STRING.
+/// `attachment_id` is caller-owned (a fresh GUID per send); empty
+/// badge/recipient is rejected by the caller. Deliberately
+/// UNATTRIBUTED (no teamsAppId/appId/cardClientId): the server 403s
+/// third-party callers that stamp the Praise app id (P12: app must be
+/// installed in the target + AAD-allowlisted), and the chat-service
+/// endpoint silently strips card attachments at write — body="" and
+/// attachments dropped from birth whatever the card details (P1–P9).
+pub fn praise_graph_message_body(
     badge: &str,
     recipient: &str,
     note: &str,
     sender: &str,
     attachment_id: &str,
 ) -> serde_json::Value {
-    let card_client_id: String = attachment_id.chars().filter(|c| *c != '-').collect();
+    let card = praise_card_content(badge, recipient, note, sender);
     serde_json::json!({
-        "content": format!("<attachment id=\"{}\"></attachment>", attachment_id),
-        "messagetype": "RichText/Html",
-        "contenttype": "text",
+        "body": {
+            "contentType": "html",
+            "content": format!("<attachment id=\"{}\"></attachment>", attachment_id),
+        },
         "attachments": [{
             "id": attachment_id,
             "contentType": ADAPTIVE_CARD_CONTENT_TYPE,
-            "appId": PRAISE_APP_ID,
-            "cardClientId": card_client_id,
-            "content": praise_card_content(badge, recipient, note, sender)
+            "content": serde_json::to_string(&card).unwrap_or_default(),
         }]
     })
 }
 
-/// Praise send with a caller-owned `clientmessageid` (same idempotency
-/// contract as [`send_message_with_client_id`]).
+/// Praise send with a caller-owned `clientmessageid`. Transport is a
+/// Graph POST ([`praise_graph_post_path`]); the id is echoed back in
+/// the receipt for send-reconcile only — Graph performs no
+/// server-side dedup on it (unlike chat-service sends).
 pub async fn send_praise_with_client_id(
     client: &TeamsClient,
     chat_id: &str,
@@ -276,19 +291,20 @@ pub async fn send_praise_with_client_id(
     if chat_id.trim().is_empty() {
         anyhow::bail!("empty chat id");
     }
-    let url = format!(
-        "{}/v1/users/ME/conversations/{}/messages",
-        client.chat_service_url(),
-        chat_id
-    );
-    let body = praise_message_body(
+    let path = praise_graph_post_path(chat_id);
+    let body = praise_graph_message_body(
         badge,
         recipient,
         note,
         sender,
         &uuid::Uuid::new_v4().to_string(),
     );
-    post_with_receipt(client, &url, body, client_message_id).await
+    let resp = client.graph_post(&path, &body).await?;
+    let text = resp.text().await.unwrap_or_default();
+    Ok(SentMessage {
+        id: graph_posted_message_id(&text),
+        client_message_id: client_message_id.to_string(),
+    })
 }
 
 // Idempotent sends. Every post carries a `clientmessageid`; the server
@@ -786,27 +802,58 @@ mod idempotent_send_tests {
         assert!(find_by_client_id(&rows, " ").is_none());
     }
 
-    // PRAISE: the card body carries badge/recipient/note in the
-    // captured official-client attachment shape; the attachment id
-    // matches the content's <attachment> tag and the attachment
-    // carries the Praise appId attribution + per-card cardClientId
-    // (server drops unattributed card attachments at write).
+    // PRAISE: the Graph chatMessage body carries an HTML attachment
+    // tag plus one Adaptive Card attachment with the card JSON as a
+    // STRING; the attachment id matches the tag. Deliberately
+    // unattributed (server 403s stamped app ids, P12) — no
+    // teamsAppId/appId/cardClientId keys anywhere.
     #[test]
-    fn praise_body_attachment_shape() {
+    fn praise_graph_body_shape() {
         let id = "11111111-2222-3333-4444-555555555555";
-        let b = praise_message_body("Awesome", "Jane", "Nice work", "Sam", id);
-        assert_eq!(b["messagetype"], "RichText/Html");
-        assert_eq!(b["content"], format!("<attachment id=\"{}\"></attachment>", id));
+        let b = praise_graph_message_body("Awesome", "Jane", "Nice work", "Sam", id);
+        assert_eq!(b["body"]["contentType"], "html");
+        assert_eq!(
+            b["body"]["content"],
+            format!("<attachment id=\"{}\"></attachment>", id)
+        );
         let atts = &b["attachments"];
         assert_eq!(atts[0]["id"], id);
         assert_eq!(atts[0]["contentType"], ADAPTIVE_CARD_CONTENT_TYPE);
-        assert_eq!(atts[0]["appId"], PRAISE_APP_ID);
-        assert_eq!(atts[0]["cardClientId"], "11111111222233334444555555555555");
-        let card = &atts[0]["content"];
+        let content = atts[0]["content"].as_str().expect("content is a string");
+        let card: serde_json::Value =
+            serde_json::from_str(content).expect("content parses as card JSON");
         assert_eq!(card["type"], "AdaptiveCard");
-        let flat = format!("{}", card);
         for want in ["Awesome", "Jane", "Nice work", "Sam sent praise to"] {
-            assert!(flat.contains(want), "missing {} in {}", want, flat);
+            assert!(content.contains(want), "missing {} in {}", want, content);
         }
+        let flat = format!("{}", b);
+        for banned in ["teamsAppId", "\"appId\"", "cardClientId"] {
+            assert!(!flat.contains(banned), "banned {} in {}", banned, flat);
+        }
+    }
+
+    // PRAISE: Graph POST path pins /chats/{id}/messages (channel
+    // conversation ids ride the same route, P15/P16).
+    #[test]
+    fn praise_graph_post_path_pin() {
+        assert_eq!(
+            praise_graph_post_path("19:abc@thread.tacv2"),
+            "/chats/19:abc@thread.tacv2/messages"
+        );
+        assert_eq!(
+            praise_graph_post_path("  19:x  "),
+            "/chats/19:x/messages"
+        );
+    }
+
+    // PRAISE: receipt id parses from the Graph POST answer's top-level id.
+    #[test]
+    fn graph_posted_message_id_pin() {
+        assert_eq!(
+            graph_posted_message_id(r#"{"id":"1795112027881","messageType":"message"}"#),
+            Some("1795112027881".to_string())
+        );
+        assert_eq!(graph_posted_message_id("not json"), None);
+        assert_eq!(graph_posted_message_id(r#"{"nope":1}"#), None);
     }
 }
