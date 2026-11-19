@@ -139,6 +139,30 @@ impl TeamsClient {
         check_response(resp, &url).await
     }
 
+    /// DELETE with optional `If-Match` (Planner task/plan deletes pass
+    /// the etag, whose mismatch answers 412; thread cleanup passes
+    /// `None`). A 204 means the delete applied.
+    pub async fn graph_delete_etag(
+        &self,
+        path: &str,
+        etag: Option<&str>,
+    ) -> Result<reqwest::Response> {
+        let token = self.graph_token()?;
+        let url = format!("{}{}", GRAPH_BASE, path);
+        tracing::debug!("Graph DELETE {} (If-Match)", url);
+
+        let mut req = self.http.delete(&url).bearer_auth(&token);
+        if let Some(e) = etag {
+            req = req.header("If-Match", e);
+        }
+        let resp = req
+            .send()
+            .await
+            .with_context(|| format!("Graph DELETE {} failed", url))?;
+
+        check_response(resp, &url).await
+    }
+
     /// GET request to Teams/Skype API (X-SkypeToken header).
     pub async fn teams_get(&self, url: &str) -> Result<reqwest::Response> {
         let token = self.skype_token()?;
