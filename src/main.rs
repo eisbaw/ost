@@ -74,7 +74,7 @@ enum Commands {
         #[arg(short, long)]
         to: String,
 
-        /// Server message id (from `read` verbose logs)
+        /// Server message id (from `read -v` output)
         #[arg(long)]
         message_id: String,
 
@@ -88,7 +88,18 @@ enum Commands {
         #[arg(short, long)]
         to: String,
 
-        /// Server message id (from `read` verbose logs)
+        /// Server message id (from `read -v` output)
+        #[arg(long)]
+        message_id: String,
+    },
+
+    /// Mark one conversation read up to a message
+    MarkRead {
+        /// Chat thread ID (from `chats` output)
+        #[arg(short, long)]
+        to: String,
+
+        /// Server message id (from `read -v` output; the read frontier)
         #[arg(long)]
         message_id: String,
     },
@@ -155,11 +166,12 @@ enum Commands {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    let verbose = cli.verbose;
 
     // Initialize logging differently for TUI vs CLI mode.
     // TUI mode captures logs to a buffer (displayed in debug pane).
     // CLI mode logs to stderr as usual.
-    let filter_str = if cli.verbose { "debug" } else { "info" };
+    let filter_str = if verbose { "debug" } else { "info" };
 
     if matches!(cli.command, Commands::Tui) {
         // TUI mode: capture logs to a buffer for in-TUI display.
@@ -212,7 +224,7 @@ async fn main() -> Result<()> {
             api::list_chats(limit).await?;
         }
         Commands::Read { chat_id, limit } => {
-            api::read_messages(&chat_id, limit).await?;
+            api::read_messages(&chat_id, limit, verbose).await?;
         }
         Commands::Send { to, message } => {
             tracing::info!("Sending message...");
@@ -229,6 +241,9 @@ async fn main() -> Result<()> {
         Commands::Delete { to, message_id } => {
             tracing::info!("Deleting message...");
             api::delete_message(&to, &message_id).await?;
+        }
+        Commands::MarkRead { to, message_id } => {
+            api::mark_read(&to, &message_id).await?;
         }
         Commands::Trouter => {
             trouter::connect_and_run().await?;
@@ -269,4 +284,48 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mark_read_parses_to_and_message_id() {
+        // Verb + args mirror `delete`: `--to` chat, `--message-id` frontier.
+        let cli = Cli::try_parse_from([
+            "teams-cli",
+            "mark-read",
+            "--to",
+            "19:abc@thread.v2",
+            "--message-id",
+            "1750000000000",
+        ])
+        .expect("mark-read parses");
+        match cli.command {
+            Commands::MarkRead { to, message_id } => {
+                assert_eq!(to, "19:abc@thread.v2");
+                assert_eq!(message_id, "1750000000000");
+            }
+            _ => panic!("wrong command parsed"),
+        }
+    }
+
+    #[test]
+    fn mark_read_requires_message_id() {
+        assert!(Cli::try_parse_from(["teams-cli", "mark-read", "--to", "19:abc"]).is_err());
+    }
+
+    #[test]
+    fn read_still_parses_unchanged() {
+        let cli = Cli::try_parse_from(["teams-cli", "read", "19:abc", "--limit", "5"])
+            .expect("read parses");
+        match cli.command {
+            Commands::Read { chat_id, limit } => {
+                assert_eq!(chat_id, "19:abc");
+                assert_eq!(limit, 5);
+            }
+            _ => panic!("wrong command parsed"),
+        }
+    }
 }

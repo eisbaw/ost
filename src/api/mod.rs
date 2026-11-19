@@ -40,8 +40,13 @@ pub async fn list_chats(limit: usize) -> Result<()> {
 }
 
 /// Read messages from a chat (native Teams API)
-pub async fn read_messages(chat_id: &str, limit: usize) -> Result<()> {
-    chat::read_messages(chat_id, limit).await
+pub async fn read_messages(chat_id: &str, limit: usize, verbose: bool) -> Result<()> {
+    chat::read_messages(chat_id, limit, verbose).await
+}
+
+/// Mark one conversation read up to a message (native Teams API)
+pub async fn mark_read(chat_id: &str, message_id: &str) -> Result<()> {
+    chat::mark_read(chat_id, message_id).await
 }
 
 /// Send a message to a chat (native Teams API)

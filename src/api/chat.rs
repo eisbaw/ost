@@ -135,8 +135,23 @@ pub async fn list_chats(limit: usize) -> Result<()> {
     Ok(())
 }
 
+/// One history line for `read` stdout. Default shape is stable
+/// (`[ts] sender: body`, byte-identical to before); verbose appends the
+/// server message id so `edit`/`delete`/`mark-read` callers can copy it
+/// (their `--help` points at `read -v` output).
+/// (Adapted: reply-attribution and card-marker arms arrive with the
+/// reply/card stacks; this base has neither field.)
+pub fn format_read_line(msg: &MessageInfo, verbose: bool) -> String {
+    let mut line = format!("[{}] {}: {}", msg.timestamp, msg.sender, msg.content);
+    if verbose {
+        line.push_str(&format!(" [id: {}]", msg.id));
+    }
+    line
+}
+
 /// Read messages from a specific chat thread (prints to stdout).
-pub async fn read_messages(chat_id: &str, limit: usize) -> Result<()> {
+/// `verbose` appends each message's server id (see [`format_read_line`]).
+pub async fn read_messages(chat_id: &str, limit: usize, verbose: bool) -> Result<()> {
     let client = TeamsClient::new().await?;
     let msgs = read_messages_data(&client, chat_id, limit).await?;
 
@@ -146,7 +161,7 @@ pub async fn read_messages(chat_id: &str, limit: usize) -> Result<()> {
     }
 
     for msg in &msgs {
-        println!("[{}] {}: {}", msg.timestamp, msg.sender, msg.content);
+        println!("{}", format_read_line(msg, verbose));
     }
 
     Ok(())
@@ -251,6 +266,23 @@ pub async fn delete_message_with_client(
     let url = message_url(&base, chat_id, message_id);
     tracing::debug!("Deleting message at {}", url);
     client.chat_delete(&url, None).await?;
+    Ok(())
+}
+
+/// Mark one conversation read up to `message_id` (prints to stdout).
+/// CLI entry point. Empty ids fail fast before any I/O so usage errors
+/// stay hermetic (unit-tested without network); the PUT itself runs in
+/// [`mark_read_with_client`].
+pub async fn mark_read(chat_id: &str, message_id: &str) -> Result<()> {
+    if chat_id.trim().is_empty() {
+        anyhow::bail!("empty chat_id");
+    }
+    if message_id.trim().is_empty() {
+        anyhow::bail!("empty message_id");
+    }
+    let client = TeamsClient::new().await?;
+    mark_read_with_client(&client, chat_id, message_id).await?;
+    println!("Marked read.");
     Ok(())
 }
 
@@ -784,5 +816,45 @@ src="x">"#));
         let empty: serde_json::Value =
             serde_json::from_str(r#"{"consumptionhorizons":[]}"#).unwrap();
         assert!(parse_consumptionhorizons(&empty).is_empty());
+    }
+
+    fn read_fixture(content: &str) -> MessageInfo {
+        MessageInfo {
+            id: "1750000000000".to_string(),
+            sender: "Mate".to_string(),
+            timestamp: "2026-06-15T12:00:00Z".to_string(),
+            content: content.to_string(),
+            raw: format!("<p>{}</p>", content),
+        }
+    }
+
+    #[test]
+    fn read_line_default_shape_stable() {
+        // Default `read` output is byte-stable: no id anywhere.
+        let m = read_fixture("hello");
+        assert_eq!(
+            format_read_line(&m, false),
+            "[2026-06-15T12:00:00Z] Mate: hello"
+        );
+        assert!(!format_read_line(&m, false).contains("1750000000000"));
+    }
+
+    #[test]
+    fn read_line_verbose_appends_id() {
+        // `read -v` prints the server id `edit`/`delete`/`mark-read` need.
+        let m = read_fixture("hello");
+        assert_eq!(
+            format_read_line(&m, true),
+            "[2026-06-15T12:00:00Z] Mate: hello [id: 1750000000000]"
+        );
+    }
+
+    #[tokio::test]
+    async fn mark_read_rejects_empty_ids_without_io() {
+        // Fail-fast validation runs before any client/network I/O.
+        assert!(mark_read("", "m1").await.is_err());
+        assert!(mark_read("  ", "m1").await.is_err());
+        assert!(mark_read("19:chat", "").await.is_err());
+        assert!(mark_read("19:chat", "   ").await.is_err());
     }
 }
