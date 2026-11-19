@@ -192,6 +192,98 @@ pub async fn send_message_with_client(
     Ok(())
 }
 
+/// Praise app id real clients stamp on the card attachment.
+pub const PRAISE_APP_ID: &str = "d832a33f-28c2-4969-8ad0-4fee681dc5b4";
+/// Attachment content type for the Praise Adaptive Card.
+pub const ADAPTIVE_CARD_CONTENT_TYPE: &str = "application/vnd.microsoft.card.adaptive";
+
+/// Adaptive Card object for one Praise post (pure): the badge title,
+/// the "<sender> sent praise to" line, the recipient, and the note.
+/// No remote image: badge art renders natively in-app, so the card
+/// never depends on a CDN URL whose per-badge hash we do not know.
+pub fn praise_card_content(badge: &str, recipient: &str, note: &str, sender: &str) -> serde_json::Value {
+    serde_json::json!({
+        "type": "AdaptiveCard",
+        "version": "1.0",
+        "body": [{
+            "type": "ColumnSet",
+            "spacing": "large",
+            "separator": true,
+            "columns": [
+                {"type": "Column", "width": "auto", "items": [{
+                    "type": "TextBlock", "text": badge,
+                    "weight": "bolder", "size": "large", "horizontalAlignment": "center"
+                }]},
+                {"type": "Column", "width": "stretch", "spacing": "medium", "items": [
+                    {"type": "TextBlock", "wrap": true, "size": "small", "isSubtle": true,
+                     "text": format!("{} sent praise to", sender)},
+                    {"type": "TextBlock", "wrap": true, "spacing": "small",
+                     "weight": "bolder", "size": "medium", "text": recipient},
+                    {"type": "TextBlock", "spacing": "small", "wrap": true, "text": note}
+                ]}
+            ]
+        }]
+    })
+}
+
+/// POST body for one Praise send (pure, Graph-documented shape): HTML
+/// content naming the attachment id plus one Adaptive Card
+/// attachment. `attachment_id` is caller-owned (a fresh GUID per
+/// send); empty badge/recipient is rejected by the caller.
+pub fn praise_message_body(
+    badge: &str,
+    recipient: &str,
+    note: &str,
+    sender: &str,
+    attachment_id: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "content": format!("<attachment id=\"{}\"></attachment>", attachment_id),
+        "messagetype": "RichText/Html",
+        "contenttype": "text",
+        "attachments": [{
+            "id": attachment_id,
+            "contentType": ADAPTIVE_CARD_CONTENT_TYPE,
+            "content": praise_card_content(badge, recipient, note, sender)
+        }]
+    })
+}
+
+/// Praise send with a caller-owned `clientmessageid` (same idempotency
+/// contract as [`send_message_with_client_id`]).
+pub async fn send_praise_with_client_id(
+    client: &TeamsClient,
+    chat_id: &str,
+    badge: &str,
+    recipient: &str,
+    note: &str,
+    sender: &str,
+    client_message_id: &str,
+) -> Result<SentMessage> {
+    if badge.trim().is_empty() {
+        anyhow::bail!("empty praise badge");
+    }
+    if recipient.trim().is_empty() {
+        anyhow::bail!("empty praise recipient");
+    }
+    if chat_id.trim().is_empty() {
+        anyhow::bail!("empty chat id");
+    }
+    let url = format!(
+        "{}/v1/users/ME/conversations/{}/messages",
+        client.chat_service_url(),
+        chat_id
+    );
+    let body = praise_message_body(
+        badge,
+        recipient,
+        note,
+        sender,
+        &uuid::Uuid::new_v4().to_string(),
+    );
+    post_with_receipt(client, &url, body, client_message_id).await
+}
+
 // Idempotent sends. Every post carries a `clientmessageid`; the server
 // receipt (Location / OriginalArrivalTime) names the posted copy, and
 // `find_message_by_client_id` lets a caller whose POST timed out check
@@ -685,5 +777,25 @@ mod idempotent_send_tests {
         assert_eq!(find_by_client_id(&rows, "555").map(|m| m.id.as_str()), Some("2"));
         assert!(find_by_client_id(&rows, "556").is_none());
         assert!(find_by_client_id(&rows, " ").is_none());
+    }
+
+    // PRAISE: the card body carries badge/recipient/note in the
+    // Graph-documented attachment shape; the attachment id matches
+    // the content's <attachment> tag.
+    #[test]
+    fn praise_body_attachment_shape() {
+        let id = "11111111-2222-3333-4444-555555555555";
+        let b = praise_message_body("Awesome", "Jane", "Nice work", "Sam", id);
+        assert_eq!(b["messagetype"], "RichText/Html");
+        assert_eq!(b["content"], format!("<attachment id=\"{}\"></attachment>", id));
+        let atts = &b["attachments"];
+        assert_eq!(atts[0]["id"], id);
+        assert_eq!(atts[0]["contentType"], ADAPTIVE_CARD_CONTENT_TYPE);
+        let card = &atts[0]["content"];
+        assert_eq!(card["type"], "AdaptiveCard");
+        let flat = format!("{}", card);
+        for want in ["Awesome", "Jane", "Nice work", "Sam sent praise to"] {
+            assert!(flat.contains(want), "missing {} in {}", want, flat);
+        }
     }
 }
