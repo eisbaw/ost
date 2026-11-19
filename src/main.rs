@@ -84,6 +84,18 @@ enum Commands {
         set: Option<String>,
     },
 
+    /// Read one online meeting's attendance report (Graph, read-only)
+    MeetingAttendance {
+        /// Online meeting id (from the join URL or Graph)
+        meeting_id: String,
+    },
+
+    /// Read one online meeting's server capture toggles (Graph, read-only)
+    MeetingCapture {
+        /// Online meeting id (from the join URL or Graph)
+        meeting_id: String,
+    },
+
     /// Place a test call to yourself (self-call)
     CallTest {
         /// Duration in seconds to keep the call active
@@ -217,6 +229,12 @@ async fn main() -> Result<()> {
         #[cfg(feature = "video-capture")]
         Commands::CamTest => {
             calling::camera::cam_test()?;
+        }
+        Commands::MeetingAttendance { meeting_id } => {
+            api::show_meeting_attendance(&meeting_id).await?;
+        }
+        Commands::MeetingCapture { meeting_id } => {
+            api::show_meeting_capture(&meeting_id).await?;
         }
         Commands::Presence { set } => match set {
             Some(status) => {

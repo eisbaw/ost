@@ -4,6 +4,7 @@ mod chat;
 pub mod client;
 mod graph;
 mod me;
+mod meetings_plus;
 mod presence;
 mod teams;
 
@@ -23,6 +24,13 @@ pub use teams::ChannelInfo;
 // Re-export data-returning functions for TUI integration
 pub use chat::{list_chats_data, read_messages_data, send_message_with_client};
 pub use me::whoami_data;
+pub use meetings_plus::{
+    attendance_records_path, attendance_reports_path, capture_options_body,
+    capture_options_path, meeting_attendance_data, meeting_capture_options_data,
+    parse_attendance_records, parse_capture_options, parse_first_report_id,
+    set_meeting_capture_options_data, show_meeting_attendance, show_meeting_capture,
+    AttendanceEntry, CaptureOptions,
+};
 pub use presence::get_presence_data;
 pub use teams::list_teams_data;
 
