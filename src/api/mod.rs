@@ -6,6 +6,7 @@ mod graph;
 mod me;
 mod presence;
 mod teams;
+pub mod whiteboard;
 
 use anyhow::Result;
 
@@ -25,6 +26,12 @@ pub use chat::{list_chats_data, read_messages_data, send_message_with_client};
 pub use me::whoami_data;
 pub use presence::get_presence_data;
 pub use teams::list_teams_data;
+// OstMac whiteboard: board create/share/open + ink-sync read printers.
+pub use whiteboard::{
+    create_whiteboard, delete_whiteboard, join_whiteboard, list_whiteboards, redeem_whiteboard,
+    rename_whiteboard, revoke_share_link, share_whiteboard, show_collaborators, show_content,
+    show_meeting_url, show_my_permissions, show_share_link, show_tab_urls, show_whiteboard,
+};
 
 /// List recent chats (native Teams API)
 pub async fn list_chats(limit: usize) -> Result<()> {

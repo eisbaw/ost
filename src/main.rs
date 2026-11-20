@@ -123,6 +123,140 @@ enum Commands {
     #[cfg(feature = "video-capture")]
     CamTest,
 
+    /// List my whiteboards (legacy Azure boards)
+    WbList,
+
+    /// Create one whiteboard (prints the created board)
+    WbCreate {
+        /// Board title (blank when omitted)
+        #[arg(long)]
+        title: Option<String>,
+    },
+
+    /// Open one whiteboard (prints the board)
+    WbShow {
+        /// Board id (from `wb-list` output)
+        board_id: String,
+    },
+
+    /// Rename one whiteboard (prints the updated board)
+    WbRename {
+        /// Board id (from `wb-list` output)
+        board_id: String,
+
+        /// New board title
+        #[arg(long)]
+        title: String,
+    },
+
+    /// Delete one whiteboard
+    WbDelete {
+        /// Board id (from `wb-list` output)
+        board_id: String,
+    },
+
+    /// Mint a share link on one whiteboard (prints the link)
+    WbShare {
+        /// Board id (from `wb-list` output)
+        board_id: String,
+    },
+
+    /// Fetch one whiteboard's share link (prints the link)
+    WbShareShow {
+        /// Board id (from `wb-list` output)
+        board_id: String,
+    },
+
+    /// Revoke one whiteboard's share link
+    WbUnshare {
+        /// Board id (from `wb-list` output)
+        board_id: String,
+    },
+
+    /// List one whiteboard's collaborators
+    WbCollaborators {
+        /// Board id (from `wb-list` output)
+        board_id: String,
+    },
+
+    /// Read my permissions on one whiteboard
+    WbMyPerms {
+        /// Board id (from `wb-list` output)
+        board_id: String,
+    },
+
+    /// Redeem a legacy whiteboard share token
+    WbRedeem {
+        /// Share token (from `wb-share` output)
+        token: String,
+    },
+
+    /// Read one whiteboard content page (ink-sync read path)
+    WbContent {
+        /// Board id (from `wb-list` output)
+        board_id: String,
+
+        /// Next-page cursor (from a previous `wb-content` run)
+        #[arg(long)]
+        cursor: Option<String>,
+    },
+
+    /// Join one board file's delta session (ink-sync channel open)
+    WbJoin {
+        /// SharePoint site URL (from the drive locator)
+        #[arg(long)]
+        site: String,
+
+        /// Drive id
+        #[arg(long)]
+        drive: String,
+
+        /// Board file item id
+        #[arg(long)]
+        item: String,
+
+        /// Full Authorization header value for the join body
+        #[arg(long)]
+        auth: String,
+    },
+
+    /// Print a board's Teams tab-config URLs (no network)
+    WbTabUrl {
+        /// Azure board id (with --token)
+        #[arg(long)]
+        board: Option<String>,
+
+        /// Azure share token (with --board)
+        #[arg(long)]
+        token: Option<String>,
+
+        /// Fluid board file web URL
+        #[arg(long)]
+        web_url: Option<String>,
+    },
+
+    /// Print a board's meeting participant URL (no network)
+    WbMeetingUrl {
+        /// Fluid board file web URL
+        #[arg(long)]
+        web_url: String,
+
+        /// Participant may edit (else view-only)
+        #[arg(long)]
+        can_edit: bool,
+
+        /// Proof token (ad-hoc access)
+        #[arg(long)]
+        proof_token: Option<String>,
+
+        /// Fluid file id
+        #[arg(long)]
+        fluid_file_id: Option<String>,
+
+        /// Annotation board
+        #[arg(long)]
+        annotation: bool,
+    },
     /// Launch the terminal user interface
     Tui,
 }
@@ -227,6 +361,71 @@ async fn main() -> Result<()> {
                 api::get_presence().await?;
             }
         },
+        Commands::WbList => {
+            tracing::info!("Fetching whiteboards...");
+            api::list_whiteboards().await?;
+        }
+        Commands::WbCreate { title } => {
+            tracing::info!("Creating whiteboard...");
+            api::create_whiteboard(title.as_deref()).await?;
+        }
+        Commands::WbShow { board_id } => {
+            tracing::info!("Fetching whiteboard...");
+            api::show_whiteboard(&board_id).await?;
+        }
+        Commands::WbRename { board_id, title } => {
+            tracing::info!("Renaming whiteboard...");
+            api::rename_whiteboard(&board_id, &title).await?;
+        }
+        Commands::WbDelete { board_id } => {
+            tracing::info!("Deleting whiteboard...");
+            api::delete_whiteboard(&board_id).await?;
+        }
+        Commands::WbShare { board_id } => {
+            tracing::info!("Sharing whiteboard...");
+            api::share_whiteboard(&board_id).await?;
+        }
+        Commands::WbShareShow { board_id } => {
+            tracing::info!("Fetching whiteboard share link...");
+            api::show_share_link(&board_id).await?;
+        }
+        Commands::WbUnshare { board_id } => {
+            tracing::info!("Revoking whiteboard share link...");
+            api::revoke_share_link(&board_id).await?;
+        }
+        Commands::WbCollaborators { board_id } => {
+            tracing::info!("Fetching whiteboard collaborators...");
+            api::show_collaborators(&board_id).await?;
+        }
+        Commands::WbMyPerms { board_id } => {
+            tracing::info!("Fetching whiteboard permissions...");
+            api::show_my_permissions(&board_id).await?;
+        }
+        Commands::WbRedeem { token } => {
+            tracing::info!("Redeeming whiteboard share token...");
+            api::redeem_whiteboard(&token).await?;
+        }
+        Commands::WbContent { board_id, cursor } => {
+            tracing::info!("Reading whiteboard content...");
+            api::show_content(&board_id, cursor.as_deref()).await?;
+        }
+        Commands::WbJoin { site, drive, item, auth } => {
+            tracing::info!("Joining whiteboard session...");
+            api::join_whiteboard(&site, &drive, &item, &auth).await?;
+        }
+        Commands::WbTabUrl { board, token, web_url } => {
+            api::show_tab_urls(board.as_deref(), token.as_deref(), web_url.as_deref()).await?;
+        }
+        Commands::WbMeetingUrl { web_url, can_edit, proof_token, fluid_file_id, annotation } => {
+            api::show_meeting_url(
+                &web_url,
+                can_edit,
+                proof_token.as_deref(),
+                fluid_file_id.as_deref(),
+                annotation,
+            )
+            .await?;
+        }
         // TUI is handled above with early return.
         Commands::Tui => unreachable!(),
     }
