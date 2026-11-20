@@ -2,6 +2,7 @@
 
 mod chat;
 pub mod client;
+mod copilot;
 mod graph;
 mod me;
 mod presence;
@@ -19,6 +20,22 @@ pub use teams::TeamInfo;
 // only through TeamInfo.channels, but kept public for future callers).
 #[allow(unused_imports)]
 pub use teams::ChannelInfo;
+
+// OstMac COPILOT-BUILD: ChatHub transport + Taiger licence.
+pub use copilot::{
+    cancel_frame, chat_invocation, frame, handshake_request, hub_url_2026,
+    hub_url_teams, license_reason, license_status, licensed, parse_handshake,
+    parse_license_status, parse_server_record, parse_stream_item, ping_frame,
+    jwt_oid_tid, run_turn, split_frames, substrate_token_for, sydney_token_for,
+    turn_error_reason, Attribution, ChatTurn, CopilotAnswer, HubQuery,
+    LicenseStatus, ServerEvent, TurnProgress, ALLOWED_TEAMS, CONNECT_TIMEOUT_SECS,
+    ENTITIES_2026, ERR_AUTH, ERR_DISENGAGED, ERR_DLP_BLOCKED, ERR_MISSING_LICENSE,
+    ERR_OUT_OF_CREDITS, HUB_DEFAULT, HUB_DOD, HUB_GCCH, HUB_MSIT, HUB_PROD,
+    HUB_SDF, HUB_TEAMS_PATH, LICENSE_STATUSES, PLUGIN_WEB_ID, PLUGIN_WEB_SOURCE,
+    RS, SCENARIO_TEAMSHUB, SOURCE_TEAMSHUB, STREAMING_CONCISE, SUBSTRATE_RESOURCE,
+    SYDNEY_AUDIENCE, SYDNEY_SCOPE, TAIGER_BASE, TAIGER_CUSTOM, TONE_CHAT,
+    TONE_MAGIC, TONE_REASONING, TURN_TIMEOUT_SECS, VARIANTS_STATIC_PAIR,
+};
 
 // Re-export data-returning functions for TUI integration
 pub use chat::{list_chats_data, read_messages_data, send_message_with_client};

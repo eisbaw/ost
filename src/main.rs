@@ -115,6 +115,43 @@ enum Commands {
         tone: bool,
     },
 
+    /// Copilot chat probe (ChatHub transport, free tier first).
+    /// `--print-frames`/`--replay` are offline; `--chat`/`--license-status`
+    /// need tenant recovery (phase-2 P0/P4) and are never run blind.
+    Copilot {
+        /// Print the built handshake/ping/invocation frames for PROMPT (offline)
+        #[arg(long)]
+        print_frames: Option<String>,
+
+        /// Parse one recorded server record and print the event (offline)
+        #[arg(long)]
+        replay: Option<String>,
+
+        /// Run one live chat turn (phase 2 only)
+        #[arg(long)]
+        chat: Option<String>,
+
+        /// Fetch the Taiger licence status (phase 2 only)
+        #[arg(long)]
+        license_status: bool,
+
+        /// Token family: sydney (mapped) or substrate (P4 probe)
+        #[arg(long, default_value = "sydney")]
+        token_family: String,
+
+        /// Model selector tone (capture-pin; default Magic = Auto)
+        #[arg(long, default_value = "Magic")]
+        tone: String,
+
+        /// Extra optionsSets flags, repeatable (default: none = free tier)
+        #[arg(long)]
+        option_set: Vec<String>,
+
+        /// Hub env: default, prod, sdf, msit, gcch, dod, teams2024
+        #[arg(long, default_value = "default")]
+        hub: String,
+    },
+
     /// Test microphone capture: record 3 seconds then play back
     #[cfg(feature = "audio")]
     MicTest,
@@ -210,6 +247,19 @@ async fn main() -> Result<()> {
             )
             .await?;
         }
+        Commands::Copilot {
+            print_frames,
+            replay,
+            chat,
+            license_status,
+            token_family,
+            tone,
+            option_set,
+            hub,
+        } => {
+            copilot_probe(print_frames, replay, chat, license_status, &token_family, &tone, option_set, &hub)
+                .await?;
+        }
         #[cfg(feature = "audio")]
         Commands::MicTest => {
             calling::audio::mic_test()?;
@@ -232,4 +282,130 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Copilot chat probe. Offline modes (`--print-frames`, `--replay`)
+/// never touch the network; live modes (`--chat`, `--license-status`)
+/// are phase-2 only (tenant recovery + owner brief). Tokens come from
+/// the stacked token broker (#75); upstream is single-account, so no
+/// profile lookup (vendored profiles ride #50, still open).
+#[allow(clippy::too_many_arguments)]
+async fn copilot_probe(
+    print_frames: Option<String>,
+    replay: Option<String>,
+    chat: Option<String>,
+    license_status: bool,
+    token_family: &str,
+    tone: &str,
+    option_set: Vec<String>,
+    hub: &str,
+) -> Result<()> {
+    let mut turn = api::ChatTurn::free_tier("");
+    turn.tone = tone.to_string();
+    turn.options_sets = option_set;
+    if let Some(prompt) = print_frames {
+        turn.text = prompt;
+        let inv = api::chat_invocation(&turn, "0");
+        println!("f0 handshake: {}", api::handshake_request().replace('\u{1e}', "␞"));
+        println!("f2 ping: {}", api::ping_frame().replace('\u{1e}', "␞"));
+        println!("f3 invocation: {}", api::frame(&inv).replace('\u{1e}', "␞"));
+        let q = api::HubQuery::default();
+        let url = api::hub_url_2026(api::HUB_DEFAULT, &turn.conversation_id, "REDACTED", "teamshub", "teamshub", &q);
+        println!("url: {}", url);
+        return Ok(());
+    }
+    if let Some(record) = replay {
+        for r in api::split_frames(&record) {
+            println!("{:?}", api::parse_server_record(r));
+        }
+        return Ok(());
+    }
+    if license_status {
+        let scope = format!("{}/.default", api::TAIGER_BASE);
+        let grant = auth::oauth::token_for_scope(&scope).await?;
+        let (oid, tid) = api::jwt_oid_tid(&grant.access_token)
+            .ok_or_else(|| anyhow::anyhow!("token has no oid/tid"))?;
+        let s = api::license_status(&grant.access_token, &oid, &tid).await;
+        println!("status: {}", s.status);
+        println!("licensed: {}", api::licensed(&s.status));
+        if let Some(r) = api::license_reason(&s.status) {
+            println!("reason: {}", r);
+        }
+        if let Some(e) = s.error_text() {
+            println!("error: {}", e);
+        }
+        return Ok(());
+    }
+    if let Some(prompt) = chat {
+        turn.text = prompt;
+        let token = match token_family {
+            "substrate" => api::substrate_token_for().await?,
+            _ => api::sydney_token_for().await?,
+        };
+        let url = if hub == "teams2024" {
+            let (oid, tid) =
+                api::jwt_oid_tid(&token).ok_or_else(|| anyhow::anyhow!("token has no oid/tid"))?;
+            api::hub_url_teams(&oid, &tid, &token)
+        } else {
+            let base = match hub {
+                "prod" => api::HUB_PROD,
+                "sdf" => api::HUB_SDF,
+                "msit" => api::HUB_MSIT,
+                "gcch" => api::HUB_GCCH,
+                "dod" => api::HUB_DOD,
+                _ => api::HUB_DEFAULT,
+            };
+            api::hub_url_2026(base, &turn.conversation_id, &token, "teamshub", "teamshub", &api::HubQuery::default())
+        };
+        let answer = api::run_turn(&url, &turn, |p| match p {
+            api::TurnProgress::Text(t) => {
+                print!("\r\x1b[2K{}", t.lines().last().unwrap_or(""));
+                use std::io::Write;
+                let _ = std::io::stdout().flush();
+            }
+            api::TurnProgress::Progress(p) => tracing::info!("progress: {}", p),
+            api::TurnProgress::Done(_) => {}
+        })
+        .await?;
+        println!("\r\x1b[2K{}", answer.text);
+        for s in &answer.suggestions {
+            println!("suggestion: {}", s);
+        }
+        return Ok(());
+    }
+    anyhow::bail!("pick one: --print-frames | --replay | --chat | --license-status");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn copilot_probe_parses_offline_and_live_modes() {
+        let cli = Cli::try_parse_from(["teams-cli", "copilot", "--print-frames", "hi"]).unwrap();
+        match cli.command {
+            Commands::Copilot { print_frames, tone, token_family, hub, .. } => {
+                assert_eq!(print_frames.as_deref(), Some("hi"));
+                assert_eq!(tone, "Magic");
+                assert_eq!(token_family, "sydney");
+                assert_eq!(hub, "default");
+            }
+            _ => panic!("wrong command parsed"),
+        }
+        let cli = Cli::try_parse_from([
+            "teams-cli", "copilot", "--chat", "hi", "--token-family", "substrate",
+            "--tone", "Chat", "--option-set", "a", "--option-set", "b", "--hub", "teams2024",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Copilot { chat, token_family, tone, option_set, hub, .. } => {
+                assert_eq!(chat.as_deref(), Some("hi"));
+                assert_eq!(token_family, "substrate");
+                assert_eq!(tone, "Chat");
+                assert_eq!(option_set, vec!["a".to_string(), "b".to_string()]);
+                assert_eq!(hub, "teams2024");
+            }
+            _ => panic!("wrong command parsed"),
+        }
+    }
 }
